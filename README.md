@@ -1,10 +1,9 @@
 # Nerf_IDL
 Repo for IDL project
 
-Assignment 3 - Nerf - Volume Rendering - 3D Vision Course CMSC848F
+
 ===================================
 
-The original assignment repository with problem descriptions can be found [here](https://github.com/848f-3DVision/assignment3)
 
 The report documentation for this project is also hosted as Github Pages and can be found [here](https://darshit-desai.github.io/NeRF-VolumeRendering-3DVision)
 
