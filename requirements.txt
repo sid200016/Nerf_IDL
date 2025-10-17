@@ -1,0 +1,16 @@
+# Base packages
+torch>=2.0
+torchvision
+fvcore
+iopath
+# Visualization / utilities
+hydra-core
+Pillow
+plotly
+requests
+imageio
+matplotlib
+numpy
+PyMCubes
+tqdm
+visdom
