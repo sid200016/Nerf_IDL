@@ -1,0 +1,21 @@
+name: nerf-pytorch
+channels:
+  - pytorch
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.9
+  - pip
+  - cudatoolkit=11.7
+  - pip:
+    - torch==1.13.1
+    - torchvision>=0.14.1
+    - numpy<2.0
+    - imageio<2.5.0
+    - imageio-ffmpeg
+    - matplotlib
+    - configargparse
+    - tensorboard>=2.0
+    - tqdm
+    - opencv-python
+
