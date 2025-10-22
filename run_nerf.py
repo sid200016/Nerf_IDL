@@ -9,7 +9,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from tqdm import tqdm, trange
 from torch.utils.tensorboard import SummaryWriter
-
+from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
+from torchmetrics.image import StructuralSimilarityIndexMeasure
 import matplotlib.pyplot as plt
 
 from run_nerf_helpers import *
@@ -707,7 +708,9 @@ def train():
 
     # Summary writers
     writer = SummaryWriter(os.path.join(basedir, 'summaries', expname))
-    
+    #Metrics init!!
+    lpips_fn = LearnedPerceptualImagePatchSimilarity(net='vgg').to(device)
+    ssim_fn = StructuralSimilarityIndexMeasure(data_range=1.0).to(device)
     start = start + 1
     for i in trange(start, N_iters):
         time0 = time.time()
@@ -844,14 +847,19 @@ def train():
                                                     **render_kwargs_test)
 
             psnr_holdout = mse2psnr(img2mse(rgb, target))
-
+            rgb_images = torch.clamp(rgb.permute(2,0,1).unsqueeze(0),0,1)
+            target_images = torch.clamp(target.permute(2,0,1).unsqueeze(0),0,1)
+            with torch.no_grad():
+                lpips_val = lpips_fn(rgb_images, target_images).item()
+                ssim_val = ssim_fn(rgb_images, target_images).item()
             # Log images to tensorboard (HWC format)
             writer.add_image('val/rgb', to8b(rgb.cpu().numpy()), global_step, dataformats='HWC')
             writer.add_image('val/disp', disp.cpu().numpy(), global_step, dataformats='HW')
             writer.add_image('val/acc', acc.cpu().numpy(), global_step, dataformats='HW')
             writer.add_scalar('val/psnr_holdout', psnr_holdout.item(), global_step)
             writer.add_image('val/rgb_holdout', to8b(target.cpu().numpy()), global_step, dataformats='HWC')
-
+            writer.add_scalar('val/lpips', lpips_val, global_step)
+            writer.add_scalar('val/ssim', ssim_val, global_step)
             if args.N_importance > 0:
                 writer.add_image('val/rgb0', to8b(extras['rgb0'].cpu().numpy()), global_step, dataformats='HWC')
                 writer.add_image('val/disp0', extras['disp0'].cpu().numpy(), global_step, dataformats='HW')
