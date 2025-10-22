@@ -1,31 +1,21 @@
-name: l3d
+name: nerf-pytorch
 channels:
-  - pyg
   - pytorch
-  - pytorch3d
   - conda-forge
-  - fvcore
-  - iopath
-  - bottler
   - defaults
 dependencies:
-  - cudatoolkit=11.0
   - python=3.9
   - pip
-  - pytorch
-  - pytorch3d=0.6.1
-  - torchvision
-  - fvcore
-  - iopath
-  - nvidiacub
+  - cudatoolkit=11.7
   - pip:
-    - hydra-core
-    - Pillow
-    - plotly
-    - requests
-    - imageio
+    - torch==1.13.1
+    - torchvision>=0.14.1
+    - numpy<2.0
+    - imageio<2.5.0
+    - imageio-ffmpeg
     - matplotlib
-    - numpy
-    - PyMCubes
+    - configargparse
+    - tensorboard>=2.0
     - tqdm
-    - visdom
+    - opencv-python
+

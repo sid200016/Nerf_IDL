@@ -1,16 +1,9 @@
-# Base packages
-torch>=2.0
-torchvision
-fvcore
-iopath
-# Visualization / utilities
-hydra-core
-Pillow
-plotly
-requests
+torch==1.11.0
+torchvision>=0.9.1
 imageio
+imageio-ffmpeg
 matplotlib
-numpy
-PyMCubes
+configargparse
+tensorboard>=2.0
 tqdm
-visdom
+opencv-python
