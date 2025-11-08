@@ -13,3 +13,9 @@ N_importance = 64
 use_viewdirs = True
 raw_noise_std = 1e0
 
+# Learnable Fourier Encoding (improves PSNR)
+learnable_pe = True
+
+# Gradient clipping for stability (recommended with learnable PE)
+grad_clip = 0.5
+

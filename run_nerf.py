@@ -40,12 +40,23 @@ def run_network(inputs, viewdirs, fn, embed_fn, embeddirs_fn, netchunk=1024*64):
     """Prepares inputs and applies network 'fn'.
     """
     inputs_flat = torch.reshape(inputs, [-1, inputs.shape[-1]])
-    embedded = embed_fn(inputs_flat)
+    
+    # Handle both module-based and function-based embedders
+    if isinstance(embed_fn, nn.Module):
+        embedded = embed_fn(inputs_flat)
+    else:
+        embedded = embed_fn(inputs_flat)
 
     if viewdirs is not None:
         input_dirs = viewdirs[:,None].expand(inputs.shape)
         input_dirs_flat = torch.reshape(input_dirs, [-1, input_dirs.shape[-1]])
-        embedded_dirs = embeddirs_fn(input_dirs_flat)
+        
+        # Handle both module-based and function-based embedders
+        if isinstance(embeddirs_fn, nn.Module):
+            embedded_dirs = embeddirs_fn(input_dirs_flat)
+        else:
+            embedded_dirs = embeddirs_fn(input_dirs_flat)
+        
         embedded = torch.cat([embedded, embedded_dirs], -1)
 
     outputs_flat = batchify(fn, netchunk)(embedded)
@@ -180,12 +191,24 @@ def render_path(render_poses, hwf, K, chunk, render_kwargs, gt_imgs=None, savedi
 def create_nerf(args):
     """Instantiate NeRF's MLP model.
     """
-    embed_fn, input_ch = get_embedder(args.multires, args.i_embed)
+    # Create embedders (position encoding)
+    embed_fn, input_ch = get_embedder(args.multires, args.i_embed, 
+                                       learnable=args.learnable_pe,
+                                       learnable_phase=args.learnable_pe_phase)
 
     input_ch_views = 0
     embeddirs_fn = None
     if args.use_viewdirs:
-        embeddirs_fn, input_ch_views = get_embedder(args.multires_views, args.i_embed)
+        embeddirs_fn, input_ch_views = get_embedder(args.multires_views, args.i_embed,
+                                                     learnable=args.learnable_pe,
+                                                     learnable_phase=args.learnable_pe_phase)
+    
+    # Move embedders to device if they are nn.Modules
+    if isinstance(embed_fn, nn.Module):
+        embed_fn = embed_fn.to(device)
+    if embeddirs_fn is not None and isinstance(embeddirs_fn, nn.Module):
+        embeddirs_fn = embeddirs_fn.to(device)
+    
     output_ch = 5 if args.N_importance > 0 else 4
     skips = [4]
     model = NeRF(D=args.netdepth, W=args.netwidth,
@@ -200,13 +223,36 @@ def create_nerf(args):
                           input_ch_views=input_ch_views, use_viewdirs=args.use_viewdirs).to(device)
         grad_vars += list(model_fine.parameters())
 
+    # Separate parameters for different learning rates
+    network_params = list(model.parameters())
+    if model_fine is not None:
+        network_params += list(model_fine.parameters())
+    
+    pe_params = []
+    if args.learnable_pe:
+        if isinstance(embed_fn, nn.Module):
+            pe_params += list(embed_fn.parameters())
+        if embeddirs_fn is not None and isinstance(embeddirs_fn, nn.Module):
+            pe_params += list(embeddirs_fn.parameters())
+
     network_query_fn = lambda inputs, viewdirs, network_fn : run_network(inputs, viewdirs, network_fn,
                                                                 embed_fn=embed_fn,
                                                                 embeddirs_fn=embeddirs_fn,
                                                                 netchunk=args.netchunk)
 
-    # Create optimizer
-    optimizer = torch.optim.Adam(params=grad_vars, lr=args.lrate, betas=(0.9, 0.999))
+    # Create optimizer with separate learning rates
+    # PE parameters typically need lower learning rate for stability
+    pe_lrate = args.lrate * 0.1 if args.learnable_pe else args.lrate
+    if args.learnable_pe and len(pe_params) > 0:
+        optimizer = torch.optim.Adam([
+            {'params': network_params, 'lr': args.lrate},
+            {'params': pe_params, 'lr': pe_lrate}
+        ], betas=(0.9, 0.999))
+        print(f'Using separate learning rates: network={args.lrate}, PE={pe_lrate}')
+    else:
+        optimizer = torch.optim.Adam(params=network_params + pe_params, lr=args.lrate, betas=(0.9, 0.999))
+    
+    grad_vars = network_params + pe_params
 
     start = 0
     basedir = args.basedir
@@ -233,6 +279,13 @@ def create_nerf(args):
         model.load_state_dict(ckpt['network_fn_state_dict'])
         if model_fine is not None:
             model_fine.load_state_dict(ckpt['network_fine_state_dict'])
+        
+        # Load embedder parameters if they exist
+        if args.learnable_pe:
+            if 'embed_fn_state_dict' in ckpt and isinstance(embed_fn, nn.Module):
+                embed_fn.load_state_dict(ckpt['embed_fn_state_dict'])
+            if 'embeddirs_fn_state_dict' in ckpt and isinstance(embeddirs_fn, nn.Module):
+                embeddirs_fn.load_state_dict(ckpt['embeddirs_fn_state_dict'])
 
     ##########################
 
@@ -258,7 +311,7 @@ def create_nerf(args):
     render_kwargs_test['perturb'] = False
     render_kwargs_test['raw_noise_std'] = 0.
 
-    return render_kwargs_train, render_kwargs_test, start, grad_vars, optimizer
+    return render_kwargs_train, render_kwargs_test, start, grad_vars, optimizer, embed_fn, embeddirs_fn, pe_lrate
 
 
 def raw2outputs(raw, z_vals, rays_d, raw_noise_std=0, white_bkgd=False, pytest=False):
@@ -448,6 +501,8 @@ def config_parser():
                         help='learning rate')
     parser.add_argument("--lrate_decay", type=int, default=250, 
                         help='exponential learning rate decay (in 1000 steps)')
+    parser.add_argument("--grad_clip", type=float, default=0.0,
+                        help='gradient clipping threshold (0 to disable)')
     parser.add_argument("--chunk", type=int, default=1024*32, 
                         help='number of rays processed in parallel, decrease if running out of memory')
     parser.add_argument("--netchunk", type=int, default=1024*64, 
@@ -474,6 +529,10 @@ def config_parser():
                         help='log2 of max freq for positional encoding (3D location)')
     parser.add_argument("--multires_views", type=int, default=4, 
                         help='log2 of max freq for positional encoding (2D direction)')
+    parser.add_argument("--learnable_pe", action='store_true',
+                        help='use learnable positional encoding (Fourier features)')
+    parser.add_argument("--learnable_pe_phase", action='store_true',
+                        help='make phase shifts learnable in positional encoding')
     parser.add_argument("--raw_noise_std", type=float, default=0., 
                         help='std dev of noise added to regularize sigma_a output, 1e0 recommended')
 
@@ -639,7 +698,7 @@ def train():
             file.write(open(args.config, 'r').read())
 
     # Create nerf model
-    render_kwargs_train, render_kwargs_test, start, grad_vars, optimizer = create_nerf(args)
+    render_kwargs_train, render_kwargs_test, start, grad_vars, optimizer, embed_fn, embeddirs_fn, pe_lrate = create_nerf(args)
     global_step = start
 
     bds_dict = {
@@ -709,7 +768,7 @@ def train():
     # Summary writers
     writer = SummaryWriter(os.path.join(basedir, 'summaries', expname))
     #Metrics init!!
-    lpips_fn = LearnedPerceptualImagePatchSimilarity(net='vgg').to(device)
+    lpips_fn = LearnedPerceptualImagePatchSimilarity(net_type='vgg').to(device)
     ssim_fn = StructuralSimilarityIndexMeasure(data_range=1.0).to(device)
     start = start + 1
     for i in trange(start, N_iters):
@@ -777,6 +836,24 @@ def train():
             psnr0 = mse2psnr(img_loss0)
 
         loss.backward()
+        
+        # Gradient clipping for stability (helps with learnable PE)
+        if args.grad_clip > 0:
+            torch.nn.utils.clip_grad_norm_(grad_vars, args.grad_clip)
+        
+        # Check for NaN/Inf gradients and compute gradient norm
+        grad_norm = 0.0
+        has_nan = False
+        for param in grad_vars:
+            if param.grad is not None:
+                param_norm = param.grad.data.norm(2)
+                grad_norm += param_norm.item() ** 2
+                if torch.isnan(param.grad).any() or torch.isinf(param.grad).any():
+                    has_nan = True
+        grad_norm = grad_norm ** (1. / 2)
+        if has_nan:
+            print(f"WARNING: NaN/Inf gradients detected at iteration {i}!")
+        
         optimizer.step()
 
         # NOTE: IMPORTANT!
@@ -784,8 +861,18 @@ def train():
         decay_rate = 0.1
         decay_steps = args.lrate_decay * 1000
         new_lrate = args.lrate * (decay_rate ** (global_step / decay_steps))
-        for param_group in optimizer.param_groups:
-            param_group['lr'] = new_lrate
+        
+        # Update learning rates for each parameter group
+        if args.learnable_pe and len(optimizer.param_groups) > 1:
+            # Separate learning rates for network and PE
+            new_pe_lrate = pe_lrate * (decay_rate ** (global_step / decay_steps))
+            # First group is network, second is PE (based on how we created optimizer)
+            optimizer.param_groups[0]['lr'] = new_lrate
+            optimizer.param_groups[1]['lr'] = new_pe_lrate
+        else:
+            # Single learning rate for all parameters
+            for param_group in optimizer.param_groups:
+                param_group['lr'] = new_lrate
         ################################
 
         dt = time.time()-time0
@@ -795,12 +882,19 @@ def train():
         # Rest is logging
         if i%args.i_weights==0:
             path = os.path.join(basedir, expname, '{:06d}.tar'.format(i))
-            torch.save({
+            ckpt_dict = {
                 'global_step': global_step,
                 'network_fn_state_dict': render_kwargs_train['network_fn'].state_dict(),
                 'network_fine_state_dict': render_kwargs_train['network_fine'].state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
-            }, path)
+            }
+            # Save embedder parameters if learnable
+            if args.learnable_pe:
+                if isinstance(embed_fn, nn.Module):
+                    ckpt_dict['embed_fn_state_dict'] = embed_fn.state_dict()
+                if embeddirs_fn is not None and isinstance(embeddirs_fn, nn.Module):
+                    ckpt_dict['embeddirs_fn_state_dict'] = embeddirs_fn.state_dict()
+            torch.save(ckpt_dict, path)
             print('Saved checkpoints at', path)
 
         if i%args.i_video==0 and i > 0:
@@ -830,10 +924,12 @@ def train():
 
     
         if i%args.i_print==0:
-            tqdm.write(f"[TRAIN] Iter: {i} Loss: {loss.item()}  PSNR: {psnr.item()}")
+            tqdm.write(f"[TRAIN] Iter: {i} Loss: {loss.item():.6f}  PSNR: {psnr.item():.2f}  GradNorm: {grad_norm:.4f}  LR: {new_lrate:.6f}")
             # PyTorch TensorBoard logging
             writer.add_scalar('train/loss', loss.item(), global_step)
             writer.add_scalar('train/psnr', psnr.item(), global_step)
+            writer.add_scalar('train/grad_norm', grad_norm, global_step)
+            writer.add_scalar('train/learning_rate', new_lrate, global_step)
             if args.N_importance > 0:
                 writer.add_scalar('train/psnr0', psnr0.item(), global_step)
 

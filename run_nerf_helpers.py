@@ -45,22 +45,124 @@ class Embedder:
         return torch.cat([fn(inputs) for fn in self.embed_fns], -1)
 
 
-def get_embedder(multires, i=0):
+# Learnable Fourier Feature Encoding
+class LearnableFourierEmbedder(nn.Module):
+    def __init__(self, input_dims=3, num_freqs=10, include_input=True, 
+                 learnable_freqs=True, learnable_phase=False, init_scale=1.0):
+        """
+        Learnable Fourier Feature Encoding for NeRF
+        
+        Args:
+            input_dims: Input dimension (3 for xyz coordinates)
+            num_freqs: Number of frequency bands
+            include_input: Whether to include raw input in output
+            learnable_freqs: Make frequency bands learnable
+            learnable_phase: Make phase shifts learnable
+            init_scale: Initial scale for frequency initialization
+        """
+        super(LearnableFourierEmbedder, self).__init__()
+        self.input_dims = input_dims
+        self.num_freqs = num_freqs
+        self.include_input = include_input
+        self.learnable_freqs = learnable_freqs
+        self.learnable_phase = learnable_phase
+        
+        # Initialize frequency bands (log-spaced like original NeRF)
+        freq_bands = 2.**torch.linspace(0., num_freqs-1, steps=num_freqs) * init_scale
+        
+        if learnable_freqs:
+            # Make frequencies learnable parameters
+            self.freq_bands = nn.Parameter(freq_bands)
+        else:
+            # Keep frequencies fixed
+            self.register_buffer('freq_bands', freq_bands)
+        
+        # Initialize phase shifts to zero
+        if learnable_phase:
+            # Separate phase for sin and cos, for each frequency and dimension
+            self.phase_shifts = nn.Parameter(torch.zeros(num_freqs, input_dims, 2))
+        else:
+            self.register_buffer('phase_shifts', torch.zeros(num_freqs, input_dims, 2))
+        
+        # Calculate output dimension
+        out_dim = 0
+        if include_input:
+            out_dim += input_dims
+        out_dim += num_freqs * input_dims * 2  # *2 for sin and cos
+        self.out_dim = out_dim
+        
+    def forward(self, inputs):
+        """
+        Args:
+            inputs: [..., input_dims] input coordinates
+        Returns:
+            [..., out_dim] encoded features
+        """
+        outputs = []
+        
+        if self.include_input:
+            outputs.append(inputs)
+        
+        # Apply learnable Fourier features
+        for i, freq in enumerate(self.freq_bands):
+            # Compute frequency-scaled inputs: [..., input_dims]
+            scaled_inputs = inputs * freq
+            
+            if self.learnable_phase:
+                # Add learnable phase shifts
+                sin_phase = self.phase_shifts[i, :, 0]  # [input_dims]
+                cos_phase = self.phase_shifts[i, :, 1]  # [input_dims]
+                outputs.append(torch.sin(scaled_inputs + sin_phase))
+                outputs.append(torch.cos(scaled_inputs + cos_phase))
+            else:
+                outputs.append(torch.sin(scaled_inputs))
+                outputs.append(torch.cos(scaled_inputs))
+        
+        return torch.cat(outputs, -1)
+
+
+def get_embedder(multires, i=0, learnable=False, learnable_phase=False):
+    """
+    Get embedder function for positional encoding
+    
+    Args:
+        multires: Number of frequency bands (log2 of max frequency)
+        i: Embedding type (0: default, -1: none)
+        learnable: Use learnable Fourier features
+        learnable_phase: Make phase shifts learnable (only if learnable=True)
+    
+    Returns:
+        embed: Embedding function or module
+        out_dim: Output dimension of embedding
+    """
     if i == -1:
         return nn.Identity(), 3
     
-    embed_kwargs = {
-                'include_input' : True,
-                'input_dims' : 3,
-                'max_freq_log2' : multires-1,
-                'num_freqs' : multires,
-                'log_sampling' : True,
-                'periodic_fns' : [torch.sin, torch.cos],
-    }
-    
-    embedder_obj = Embedder(**embed_kwargs)
-    embed = lambda x, eo=embedder_obj : eo.embed(x)
-    return embed, embedder_obj.out_dim
+    if learnable:
+        # Use learnable Fourier feature encoding
+        embedder_obj = LearnableFourierEmbedder(
+            input_dims=3,
+            num_freqs=multires,
+            include_input=True,
+            learnable_freqs=True,
+            learnable_phase=learnable_phase,
+            init_scale=1.0
+        )
+        return embedder_obj, embedder_obj.out_dim
+    else:
+        # Use original fixed positional encoding
+        embed_kwargs = {
+                    'include_input' : True,
+                    'input_dims' : 3,
+                    'max_freq_log2' : multires-1,
+                    'num_freqs' : multires,
+                    'log_sampling' : True,
+                    'periodic_fns' : [torch.sin, torch.cos],
+        }
+        
+        embedder_obj = Embedder(**embed_kwargs)
+        embed = lambda x, eo=embedder_obj : eo.embed(x)
+        return embed, embedder_obj.out_dim
 
 
 # Model

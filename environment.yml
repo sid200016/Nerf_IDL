@@ -18,4 +18,5 @@ dependencies:
     - tensorboard>=2.0
     - tqdm
     - opencv-python
+    - torchmetrics
 
