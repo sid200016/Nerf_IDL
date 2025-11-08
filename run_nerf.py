@@ -194,14 +194,18 @@ def create_nerf(args):
     # Create embedders (position encoding)
     embed_fn, input_ch = get_embedder(args.multires, args.i_embed, 
                                        learnable=args.learnable_pe,
-                                       learnable_phase=args.learnable_pe_phase)
+                                       learnable_phase=args.learnable_pe_phase,
+                                       learnable_freqs=getattr(args, 'pe_learnable_freqs', True),
+                                       init_scale=getattr(args, 'pe_init_scale', 1.0))
 
     input_ch_views = 0
     embeddirs_fn = None
     if args.use_viewdirs:
         embeddirs_fn, input_ch_views = get_embedder(args.multires_views, args.i_embed,
                                                      learnable=args.learnable_pe,
-                                                     learnable_phase=args.learnable_pe_phase)
+                                                     learnable_phase=args.learnable_pe_phase,
+                                                     learnable_freqs=getattr(args, 'pe_learnable_freqs', True),
+                                                     init_scale=getattr(args, 'pe_init_scale', 1.0))
     
     # Move embedders to device if they are nn.Modules
     if isinstance(embed_fn, nn.Module):
@@ -241,8 +245,9 @@ def create_nerf(args):
                                                                 netchunk=args.netchunk)
 
     # Create optimizer with separate learning rates
-    # PE parameters typically need lower learning rate for stability
-    pe_lrate = args.lrate * 0.1 if args.learnable_pe else args.lrate
+    # PE parameters need moderate learning rate - not too low to allow adaptation
+    pe_lr_scale = getattr(args, 'pe_lr_scale', 0.5)
+    pe_lrate = args.lrate * pe_lr_scale if args.learnable_pe else args.lrate
     if args.learnable_pe and len(pe_params) > 0:
         optimizer = torch.optim.Adam([
             {'params': network_params, 'lr': args.lrate},
@@ -282,10 +287,26 @@ def create_nerf(args):
         
         # Load embedder parameters if they exist
         if args.learnable_pe:
+            # Try to load embedder parameters from checkpoint
             if 'embed_fn_state_dict' in ckpt and isinstance(embed_fn, nn.Module):
-                embed_fn.load_state_dict(ckpt['embed_fn_state_dict'])
+                try:
+                    embed_fn.load_state_dict(ckpt['embed_fn_state_dict'])
+                    print('Loaded learnable PE embedder parameters from checkpoint')
+                except Exception as e:
+                    print(f'Warning: Could not load embedder parameters: {e}')
+                    print('Initializing learnable PE with default frequencies (from fixed PE checkpoint)')
+            else:
+                # Checkpoint was saved with fixed PE, initialize learnable PE with standard frequencies
+                print('Checkpoint was saved with fixed PE. Initializing learnable PE with standard frequencies.')
+                print('The learnable PE will start from the same frequencies as fixed PE and can adapt during training.')
+            
             if 'embeddirs_fn_state_dict' in ckpt and isinstance(embeddirs_fn, nn.Module):
-                embeddirs_fn.load_state_dict(ckpt['embeddirs_fn_state_dict'])
+                try:
+                    embeddirs_fn.load_state_dict(ckpt['embeddirs_fn_state_dict'])
+                    print('Loaded learnable PE view embedder parameters from checkpoint')
+                except Exception as e:
+                    print(f'Warning: Could not load view embedder parameters: {e}')
+                    print('Initializing learnable PE view embedder with default frequencies')
 
     ##########################
 
@@ -533,6 +554,12 @@ def config_parser():
                         help='use learnable positional encoding (Fourier features)')
     parser.add_argument("--learnable_pe_phase", action='store_true',
                         help='make phase shifts learnable in positional encoding')
+    parser.add_argument("--pe_learnable_freqs", type=lambda x: str(x).lower() in ['true', '1', 'yes', 'on'], default=True,
+                        help='make frequency bands learnable (default: True, set False/0/no/off to disable)')
+    parser.add_argument("--pe_init_scale", type=float, default=1.0,
+                        help='initial scale for frequency initialization (default: 1.0)')
+    parser.add_argument("--pe_lr_scale", type=float, default=0.5,
+                        help='learning rate scale for PE parameters relative to network (default: 0.5)')
     parser.add_argument("--raw_noise_std", type=float, default=0., 
                         help='std dev of noise added to regularize sigma_a output, 1e0 recommended')
 

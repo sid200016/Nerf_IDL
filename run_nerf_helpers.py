@@ -121,7 +121,8 @@ class LearnableFourierEmbedder(nn.Module):
         return torch.cat(outputs, -1)
 
 
-def get_embedder(multires, i=0, learnable=False, learnable_phase=False):
+def get_embedder(multires, i=0, learnable=False, learnable_phase=False, 
+                 learnable_freqs=True, init_scale=1.0):
     """
     Get embedder function for positional encoding
     
@@ -130,6 +131,8 @@ def get_embedder(multires, i=0, learnable=False, learnable_phase=False):
         i: Embedding type (0: default, -1: none)
         learnable: Use learnable Fourier features
         learnable_phase: Make phase shifts learnable (only if learnable=True)
+        learnable_freqs: Make frequency bands learnable (only if learnable=True)
+        init_scale: Initial scale for frequency initialization (only if learnable=True)
     
     Returns:
         embed: Embedding function or module
@@ -144,9 +147,9 @@ def get_embedder(multires, i=0, learnable=False, learnable_phase=False):
             input_dims=3,
             num_freqs=multires,
             include_input=True,
-            learnable_freqs=True,
+            learnable_freqs=learnable_freqs,
             learnable_phase=learnable_phase,
-            init_scale=1.0
+            init_scale=init_scale
         )
         return embedder_obj, embedder_obj.out_dim
     else:

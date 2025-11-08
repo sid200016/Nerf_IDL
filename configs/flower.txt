@@ -11,13 +11,22 @@ N_samples = 64
 N_importance = 64
 
 use_viewdirs = True
-raw_noise_std = 1e0
+raw_noise_std = 1e-2
 
 # Learnable Fourier Encoding (improves PSNR)
 learnable_pe = True
 
-# Gradient clipping for stability (recommended with learnable PE)
-grad_clip = 0.5
+# Fourier Encoding Hyperparameters (tune these for better PSNR)
+pe_learnable_freqs = True  # Make frequency bands learnable (default: True)
+pe_init_scale = 1.0  # Initial scale for frequency initialization (default: 1.0, try 0.5-2.0)
+pe_lr_scale = 0.5  # PE learning rate relative to network LR (default: 0.5, try 0.1-1.0)
+learnable_pe_phase = False  # Make phase shifts learnable (default: False, try True)
+
+Learning rate (can increase for faster convergence)
+lrate = 5e-4
+
+Gradient clipping for stability (reduced for better learning)
+grad_clip = 1.0
 
 # Weights & Biases logging (optional)
 use_wandb = True
