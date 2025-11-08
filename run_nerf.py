@@ -929,8 +929,8 @@ def train():
             wandb.log(log_dict, step=global_step)
 
         # Rest is logging
-        # Save checkpoints every 1000 steps
-        if i % 1000 == 0:
+        # Save checkpoints every 10000 steps
+        if i % 10000 == 0:
             path = os.path.join(basedir, expname, '{:06d}.tar'.format(i))
             ckpt_dict = {
                 'global_step': global_step,
