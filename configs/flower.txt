@@ -22,10 +22,10 @@ pe_init_scale = 1.0  # Initial scale for frequency initialization (default: 1.0,
 pe_lr_scale = 0.5  # PE learning rate relative to network LR (default: 0.5, try 0.1-1.0)
 learnable_pe_phase = False  # Make phase shifts learnable (default: False, try True)
 
-Learning rate (can increase for faster convergence)
+# Learning rate (can increase for faster convergence)
 lrate = 5e-4
 
-Gradient clipping for stability (reduced for better learning)
+# Gradient clipping for stability (reduced for better learning)
 grad_clip = 1.0
 
 # Weights & Biases logging (optional)
