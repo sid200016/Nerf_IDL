@@ -19,3 +19,9 @@ learnable_pe = True
 # Gradient clipping for stability (recommended with learnable PE)
 grad_clip = 0.5
 
+# Weights & Biases logging (optional)
+use_wandb = True
+wandb_project = nerf-idl
+wandb_run_name = flower_test_with fourier Encoding
+
+

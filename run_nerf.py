@@ -8,7 +8,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from tqdm import tqdm, trange
-from torch.utils.tensorboard import SummaryWriter
+import wandb
 from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
 from torchmetrics.image import StructuralSimilarityIndexMeasure
 import matplotlib.pyplot as plt
@@ -588,6 +588,14 @@ def config_parser():
                         help='frequency of testset saving')
     parser.add_argument("--i_video",   type=int, default=50000, 
                         help='frequency of render_poses video saving')
+    parser.add_argument("--use_wandb", action='store_true',
+                        help='use wandb for logging instead of tensorboard')
+    parser.add_argument("--wandb_project", type=str, default='nerf',
+                        help='wandb project name')
+    parser.add_argument("--wandb_entity", type=str, default=None,
+                        help='wandb entity/team name (optional)')
+    parser.add_argument("--wandb_run_name", type=str, default=None,
+                        help='wandb run name (optional, defaults to expname)')
 
     return parser
 
@@ -765,8 +773,22 @@ def train():
     print('TEST views are', i_test)
     print('VAL views are', i_val)
 
-    # Summary writers
-    writer = SummaryWriter(os.path.join(basedir, 'summaries', expname))
+    # Initialize logging (wandb or tensorboard)
+    if args.use_wandb:
+        wandb_run_name = args.wandb_run_name if args.wandb_run_name is not None else expname
+        wandb.init(
+            project=args.wandb_project,
+            entity=args.wandb_entity,
+            name=wandb_run_name,
+            config=vars(args),
+            dir=basedir
+        )
+        writer = None
+        print(f'Initialized wandb logging: project={args.wandb_project}, name={wandb_run_name}')
+    else:
+        from torch.utils.tensorboard import SummaryWriter
+        writer = SummaryWriter(os.path.join(basedir, 'summaries', expname))
+        print(f'Initialized tensorboard logging: {os.path.join(basedir, "summaries", expname)}')
     #Metrics init!!
     lpips_fn = LearnedPerceptualImagePatchSimilarity(net_type='vgg').to(device)
     ssim_fn = StructuralSimilarityIndexMeasure(data_range=1.0).to(device)
@@ -784,9 +806,13 @@ def train():
             i_batch += N_rand
             if i_batch >= rays_rgb.shape[0]:
                 print("Shuffle data after an epoch!")
+                epoch = i_batch // rays_rgb.shape[0]
                 rand_idx = torch.randperm(rays_rgb.shape[0])
                 rays_rgb = rays_rgb[rand_idx]
                 i_batch = 0
+                # Log data shuffle event to wandb
+                if args.use_wandb:
+                    wandb.log({'train/data_shuffled': 1, 'train/epoch': epoch}, step=global_step)
 
         else:
             # Random from one image
@@ -853,6 +879,8 @@ def train():
         grad_norm = grad_norm ** (1. / 2)
         if has_nan:
             print(f"WARNING: NaN/Inf gradients detected at iteration {i}!")
+            if args.use_wandb:
+                wandb.log({'train/grad_nan_warning': 1}, step=global_step)
         
         optimizer.step()
 
@@ -879,8 +907,30 @@ def train():
         # print(f"Step: {global_step}, Loss: {loss}, Time: {dt}")
         #####           end            #####
 
+        # Log all training metrics to wandb every step
+        if args.use_wandb:
+            log_dict = {
+                'train/loss': loss.item(),
+                'train/psnr': psnr.item(),
+                'train/grad_norm': grad_norm,
+                'train/learning_rate': new_lrate,
+                'train/time_per_iter': dt,
+            }
+            if args.N_importance > 0:
+                log_dict['train/psnr0'] = psnr0.item()
+            if args.learnable_pe and len(optimizer.param_groups) > 1:
+                log_dict['train/pe_learning_rate'] = new_pe_lrate
+            
+            # Add GPU memory usage if available
+            if torch.cuda.is_available():
+                log_dict['system/gpu_memory_allocated_mb'] = torch.cuda.memory_allocated() / 1024**2
+                log_dict['system/gpu_memory_reserved_mb'] = torch.cuda.memory_reserved() / 1024**2
+            
+            wandb.log(log_dict, step=global_step)
+
         # Rest is logging
-        if i%args.i_weights==0:
+        # Save checkpoints every 1000 steps
+        if i % 1000 == 0:
             path = os.path.join(basedir, expname, '{:06d}.tar'.format(i))
             ckpt_dict = {
                 'global_step': global_step,
@@ -896,6 +946,12 @@ def train():
                     ckpt_dict['embeddirs_fn_state_dict'] = embeddirs_fn.state_dict()
             torch.save(ckpt_dict, path)
             print('Saved checkpoints at', path)
+            
+            # Save checkpoint to wandb
+            if args.use_wandb:
+                wandb.save(path, base_path=basedir)
+                wandb.log({'checkpoint/saved': 1, 'checkpoint/step': global_step}, step=global_step)
+                print(f'Uploaded checkpoint to wandb: step {global_step}')
 
         if i%args.i_video==0 and i > 0:
             # Turn on testing mode
@@ -903,15 +959,28 @@ def train():
                 rgbs, disps = render_path(render_poses, hwf, K, args.chunk, render_kwargs_test)
             print('Done, saving', rgbs.shape, disps.shape)
             moviebase = os.path.join(basedir, expname, '{}_spiral_{:06d}_'.format(expname, i))
-            imageio.mimwrite(moviebase + 'rgb.mp4', to8b(rgbs), fps=30, quality=8)
-            imageio.mimwrite(moviebase + 'disp.mp4', to8b(disps / np.max(disps)), fps=30, quality=8)
+            rgb_video_path = moviebase + 'rgb.mp4'
+            disp_video_path = moviebase + 'disp.mp4'
+            imageio.mimwrite(rgb_video_path, to8b(rgbs), fps=30, quality=8)
+            imageio.mimwrite(disp_video_path, to8b(disps / np.max(disps)), fps=30, quality=8)
 
             if args.use_viewdirs:
                 render_kwargs_test['c2w_staticcam'] = render_poses[0][:3,:4]
                 with torch.no_grad():
                     rgbs_still, _ = render_path(render_poses, hwf, K, args.chunk, render_kwargs_test)
                 render_kwargs_test['c2w_staticcam'] = None
-                imageio.mimwrite(moviebase + 'rgb_still.mp4', to8b(rgbs_still), fps=30, quality=8)
+                still_video_path = moviebase + 'rgb_still.mp4'
+                imageio.mimwrite(still_video_path, to8b(rgbs_still), fps=30, quality=8)
+            
+            # Log videos to wandb
+            if args.use_wandb:
+                log_dict = {
+                    'video/spiral_rgb': wandb.Video(rgb_video_path),
+                    'video/spiral_disp': wandb.Video(disp_video_path),
+                }
+                if args.use_viewdirs:
+                    log_dict['video/spiral_still'] = wandb.Video(still_video_path)
+                wandb.log(log_dict, step=global_step)
 
         if i%args.i_testset==0 and i > 0:
             testsavedir = os.path.join(basedir, expname, 'testset_{:06d}'.format(i))
@@ -920,21 +989,34 @@ def train():
             with torch.no_grad():
                 render_path(torch.Tensor(poses[i_test]).to(device), hwf, K, args.chunk, render_kwargs_test, gt_imgs=images[i_test], savedir=testsavedir)
             print('Saved test set')
+            
+            # Log test set render event to wandb
+            if args.use_wandb:
+                wandb.log({'testset/rendered': 1, 'testset/step': global_step, 'testset/path': testsavedir}, step=global_step)
 
 
     
         if i%args.i_print==0:
             tqdm.write(f"[TRAIN] Iter: {i} Loss: {loss.item():.6f}  PSNR: {psnr.item():.2f}  GradNorm: {grad_norm:.4f}  LR: {new_lrate:.6f}")
-            # PyTorch TensorBoard logging
-            writer.add_scalar('train/loss', loss.item(), global_step)
-            writer.add_scalar('train/psnr', psnr.item(), global_step)
-            writer.add_scalar('train/grad_norm', grad_norm, global_step)
-            writer.add_scalar('train/learning_rate', new_lrate, global_step)
-            if args.N_importance > 0:
-                writer.add_scalar('train/psnr0', psnr0.item(), global_step)
+            # Logging to tensorboard (wandb already logged every step above)
+            if not args.use_wandb:
+                log_dict = {
+                    'train/loss': loss.item(),
+                    'train/psnr': psnr.item(),
+                    'train/grad_norm': grad_norm,
+                    'train/learning_rate': new_lrate,
+                }
+                if args.N_importance > 0:
+                    log_dict['train/psnr0'] = psnr0.item()
+                writer.add_scalar('train/loss', log_dict['train/loss'], global_step)
+                writer.add_scalar('train/psnr', log_dict['train/psnr'], global_step)
+                writer.add_scalar('train/grad_norm', log_dict['train/grad_norm'], global_step)
+                writer.add_scalar('train/learning_rate', log_dict['train/learning_rate'], global_step)
+                if args.N_importance > 0:
+                    writer.add_scalar('train/psnr0', log_dict['train/psnr0'], global_step)
 
         if i%args.i_img==0:
-            # Log a rendered validation view to Tensorboard
+            # Log a rendered validation view (wandb or tensorboard)
             img_i=np.random.choice(i_val)
             target = images[img_i]
             pose = poses[img_i, :3,:4]
@@ -948,18 +1030,36 @@ def train():
             with torch.no_grad():
                 lpips_val = lpips_fn(rgb_images, target_images).item()
                 ssim_val = ssim_fn(rgb_images, target_images).item()
-            # Log images to tensorboard (HWC format)
-            writer.add_image('val/rgb', to8b(rgb.cpu().numpy()), global_step, dataformats='HWC')
-            writer.add_image('val/disp', disp.cpu().numpy(), global_step, dataformats='HW')
-            writer.add_image('val/acc', acc.cpu().numpy(), global_step, dataformats='HW')
-            writer.add_scalar('val/psnr_holdout', psnr_holdout.item(), global_step)
-            writer.add_image('val/rgb_holdout', to8b(target.cpu().numpy()), global_step, dataformats='HWC')
-            writer.add_scalar('val/lpips', lpips_val, global_step)
-            writer.add_scalar('val/ssim', ssim_val, global_step)
-            if args.N_importance > 0:
-                writer.add_image('val/rgb0', to8b(extras['rgb0'].cpu().numpy()), global_step, dataformats='HWC')
-                writer.add_image('val/disp0', extras['disp0'].cpu().numpy(), global_step, dataformats='HW')
-                writer.add_image('val/z_std', extras['z_std'].cpu().numpy(), global_step, dataformats='HW')
+            
+            # Log images and metrics (wandb or tensorboard)
+            if args.use_wandb:
+                log_dict = {
+                    'val/psnr_holdout': psnr_holdout.item(),
+                    'val/lpips': lpips_val,
+                    'val/ssim': ssim_val,
+                    'val/rgb': wandb.Image(to8b(rgb.cpu().numpy())),
+                    'val/rgb_holdout': wandb.Image(to8b(target.cpu().numpy())),
+                    'val/disp': wandb.Image(disp.cpu().numpy()),
+                    'val/acc': wandb.Image(acc.cpu().numpy()),
+                }
+                if args.N_importance > 0:
+                    log_dict['val/rgb0'] = wandb.Image(to8b(extras['rgb0'].cpu().numpy()))
+                    log_dict['val/disp0'] = wandb.Image(extras['disp0'].cpu().numpy())
+                    log_dict['val/z_std'] = wandb.Image(extras['z_std'].cpu().numpy())
+                wandb.log(log_dict, step=global_step)
+            else:
+                # TensorBoard logging (HWC format)
+                writer.add_image('val/rgb', to8b(rgb.cpu().numpy()), global_step, dataformats='HWC')
+                writer.add_image('val/disp', disp.cpu().numpy(), global_step, dataformats='HW')
+                writer.add_image('val/acc', acc.cpu().numpy(), global_step, dataformats='HW')
+                writer.add_scalar('val/psnr_holdout', psnr_holdout.item(), global_step)
+                writer.add_image('val/rgb_holdout', to8b(target.cpu().numpy()), global_step, dataformats='HWC')
+                writer.add_scalar('val/lpips', lpips_val, global_step)
+                writer.add_scalar('val/ssim', ssim_val, global_step)
+                if args.N_importance > 0:
+                    writer.add_image('val/rgb0', to8b(extras['rgb0'].cpu().numpy()), global_step, dataformats='HWC')
+                    writer.add_image('val/disp0', extras['disp0'].cpu().numpy(), global_step, dataformats='HW')
+                    writer.add_image('val/z_std', extras['z_std'].cpu().numpy(), global_step, dataformats='HW')
         
 
         global_step += 1

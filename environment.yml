@@ -19,4 +19,5 @@ dependencies:
     - tqdm
     - opencv-python
     - torchmetrics
+    - wandb
 
