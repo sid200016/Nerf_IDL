@@ -278,7 +278,21 @@ def create_nerf(args):
         ckpt = torch.load(ckpt_path)
 
         start = ckpt['global_step']
-        optimizer.load_state_dict(ckpt['optimizer_state_dict'])
+        
+        # Try to load optimizer state (may fail if hyperparameters changed)
+        try:
+            optimizer.load_state_dict(ckpt['optimizer_state_dict'])
+            print('Loaded optimizer state from checkpoint')
+        except Exception as e:
+            print(f'Warning: Could not load optimizer state (hyperparameters may have changed): {e}')
+            print('Continuing with fresh optimizer state. Learning rates will be reset to new config values.')
+            # Reset optimizer learning rates to new config values
+            if args.learnable_pe and len(optimizer.param_groups) > 1:
+                optimizer.param_groups[0]['lr'] = args.lrate
+                optimizer.param_groups[1]['lr'] = pe_lrate
+            else:
+                for param_group in optimizer.param_groups:
+                    param_group['lr'] = args.lrate
 
         # Load model
         model.load_state_dict(ckpt['network_fn_state_dict'])
@@ -290,7 +304,8 @@ def create_nerf(args):
             # Try to load embedder parameters from checkpoint
             if 'embed_fn_state_dict' in ckpt and isinstance(embed_fn, nn.Module):
                 try:
-                    embed_fn.load_state_dict(ckpt['embed_fn_state_dict'])
+                    # Try strict loading first
+                    embed_fn.load_state_dict(ckpt['embed_fn_state_dict'], strict=False)
                     print('Loaded learnable PE embedder parameters from checkpoint')
                 except Exception as e:
                     print(f'Warning: Could not load embedder parameters: {e}')
@@ -302,7 +317,7 @@ def create_nerf(args):
             
             if 'embeddirs_fn_state_dict' in ckpt and isinstance(embeddirs_fn, nn.Module):
                 try:
-                    embeddirs_fn.load_state_dict(ckpt['embeddirs_fn_state_dict'])
+                    embeddirs_fn.load_state_dict(ckpt['embeddirs_fn_state_dict'], strict=False)
                     print('Loaded learnable PE view embedder parameters from checkpoint')
                 except Exception as e:
                     print(f'Warning: Could not load view embedder parameters: {e}')

@@ -19,14 +19,17 @@ learnable_pe = True
 # Fourier Encoding Hyperparameters (tune these for better PSNR)
 pe_learnable_freqs = True  # Make frequency bands learnable (default: True)
 pe_init_scale = 1.0  # Initial scale for frequency initialization (default: 1.0, try 0.5-2.0)
-pe_lr_scale = 0.5  # PE learning rate relative to network LR (default: 0.5, try 0.1-1.0)
-learnable_pe_phase = False  # Make phase shifts learnable (default: False, try True)
+pe_lr_scale = 0.8  # PE learning rate relative to network LR (increased for faster adaptation)
+learnable_pe_phase = True  # Make phase shifts learnable (enabled for more flexibility)
 
-# Learning rate (can increase for faster convergence)
-lrate = 5e-4
+# Learning rate (increased for faster convergence)
+lrate = 1e-3
 
-# Gradient clipping for stability (reduced for better learning)
-grad_clip = 1.0
+# Learning rate decay (slower decay to maintain learning longer)
+lrate_decay = 500
+
+# Gradient clipping (reduced to allow larger updates)
+grad_clip = 0.0
 
 # Weights & Biases logging (optional)
 use_wandb = True
