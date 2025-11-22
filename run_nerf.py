@@ -962,6 +962,39 @@ def train():
                 log_dict['train/psnr0'] = psnr0.item()
             if args.learnable_pe and len(optimizer.param_groups) > 1:
                 log_dict['train/pe_learning_rate'] = new_pe_lrate
+                
+                # Log PE parameter values to monitor learning
+                # Log frequency values for position encoding
+                if isinstance(embed_fn, nn.Module) and hasattr(embed_fn, 'freq_bands'):
+                    freq_bands = embed_fn.freq_bands.data.cpu().numpy()
+                    # Log ALL frequency bands
+                    for i in range(len(freq_bands)):
+                        log_dict[f'pe/pos_freq_{i}'] = float(freq_bands[i])
+                    log_dict['pe/pos_freq_mean'] = float(freq_bands.mean())
+                    log_dict['pe/pos_freq_std'] = float(freq_bands.std())
+                    log_dict['pe/pos_freq_min'] = float(freq_bands.min())
+                    log_dict['pe/pos_freq_max'] = float(freq_bands.max())
+                    
+                    # Log phase shift statistics if learnable
+                    if hasattr(embed_fn, 'phase_shifts') and embed_fn.learnable_phase:
+                        phase_shifts = embed_fn.phase_shifts.data.cpu().numpy()
+                        log_dict['pe/pos_phase_std'] = float(phase_shifts.std())
+                        log_dict['pe/pos_phase_mean'] = float(phase_shifts.mean())
+                        log_dict['pe/pos_phase_max_abs'] = float(np.abs(phase_shifts).max())
+                
+                # Log frequency values for view direction encoding
+                if embeddirs_fn is not None and isinstance(embeddirs_fn, nn.Module) and hasattr(embeddirs_fn, 'freq_bands'):
+                    view_freq_bands = embeddirs_fn.freq_bands.data.cpu().numpy()
+                    # Log ALL view frequency bands
+                    for i in range(len(view_freq_bands)):
+                        log_dict[f'pe/view_freq_{i}'] = float(view_freq_bands[i])
+                    log_dict['pe/view_freq_mean'] = float(view_freq_bands.mean())
+                    log_dict['pe/view_freq_std'] = float(view_freq_bands.std())
+                    
+                    if hasattr(embeddirs_fn, 'phase_shifts') and embeddirs_fn.learnable_phase:
+                        view_phase_shifts = embeddirs_fn.phase_shifts.data.cpu().numpy()
+                        log_dict['pe/view_phase_std'] = float(view_phase_shifts.std())
+                        log_dict['pe/view_phase_max_abs'] = float(np.abs(view_phase_shifts).max())
             
             # Add GPU memory usage if available
             if torch.cuda.is_available():

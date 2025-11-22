@@ -13,26 +13,28 @@ N_samples = 128  # More coarse samples per ray (doubled from 64)
 N_importance = 128  # More fine samples per ray (doubled from 64)
 
 use_viewdirs = True
-raw_noise_std = 1e-2  # Light regularization for learnable PE
+# Regularization - MINIMAL to allow maximum PE adaptation
+raw_noise_std = 1e-3  # Minimal regularization (was 5e-3) - allows more PE learning
 
-# Learnable Fourier Encoding (improves PSNR)
+# Learnable Fourier Encoding (optimized for maximum PSNR)
 learnable_pe = True
 
-# Increased frequency bands for higher frequency details
-multires = 15  # Increased from 10 to capture more high-frequency details
-multires_views = 6  # Increased from 4 for better view-dependent effects (specular highlights)
+# Frequency bands - key parameter for PSNR
+# Higher = more high-frequency details, but may overfit
+multires = 18  # Increased from 15 for even more frequency capacity (try 15-20 range)
+multires_views = 8  # Increased from 6 for better view-dependent effects (try 6-10 range)
 
-# Fourier Encoding Hyperparameters (optimized for high PSNR)
-pe_learnable_freqs = True  # Make frequency bands learnable
-pe_init_scale = 0.75  # Slightly higher than 0.5 to start with more frequencies (better for high quality)
-pe_lr_scale = 0.8  # PE learning rate relative to network LR
-learnable_pe_phase = True  # Make phase shifts learnable for maximum flexibility
+# Fourier Encoding Hyperparameters (AGGRESSIVE settings to force PE learning)
+pe_learnable_freqs = True  # Must be True for learnable frequencies
+pe_init_scale = 0.5  # Start LOWER to force adaptation (0.5 forces more learning)
+pe_lr_scale = 1.5  # HIGHER LR for PE to force adaptation (1.5 = 50% higher than network)
+learnable_pe_phase = True  # Enable learnable phases
 
-# Learning rate (slightly reduced for stability with higher quality settings)
-lrate = 8e-4  # Slightly reduced from 1e-3 for stability with high quality settings
+# Learning rate - increased for better PE learning
+lrate = 1.2e-3  # Slightly higher base LR (was 1e-3)
 
-# Learning rate decay (slower decay to maintain learning longer)
-lrate_decay = 500  # Maintains learning for longer training
+# Learning rate decay - MUCH slower to allow PE to keep learning
+lrate_decay = 1000  # Much slower decay (was 500) - keeps PE learning longer
 
 # Gradient clipping (disabled for maximum learning, but can enable if unstable)
 grad_clip = 0.0  # No clipping for maximum learning (set to 1.0 if training becomes unstable)
@@ -40,6 +42,6 @@ grad_clip = 0.0  # No clipping for maximum learning (set to 1.0 if training beco
 # Weights & Biases logging
 use_wandb = True
 wandb_project = nerf-idl
-wandb_run_name = flower_high_quality_multires15_samples128
+wandb_run_name = flower_aggressive_pe_lr1.5_init0.5
 
 
