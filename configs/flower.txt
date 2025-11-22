@@ -1,39 +1,45 @@
-expname = flower_test
+expname = flower_test_high_quality
 basedir = ./logs
 datadir = ./data/nerf_llff_data/flower
 dataset_type = llff
 
-factor = 8
+# High resolution training (factor 4 = 2x resolution, factor 2 = 4x resolution)
+factor = 4  # Reduced from 8 for higher resolution (2x more pixels)
 llffhold = 8
 
-N_rand = 1024
-N_samples = 64
-N_importance = 64
+# Increased sampling for better quality
+N_rand = 2048  # Increased batch size for more stable gradients (if memory allows, else 1024)
+N_samples = 128  # More coarse samples per ray (doubled from 64)
+N_importance = 128  # More fine samples per ray (doubled from 64)
 
 use_viewdirs = True
-raw_noise_std = 1e-2
+raw_noise_std = 1e-2  # Light regularization for learnable PE
 
 # Learnable Fourier Encoding (improves PSNR)
 learnable_pe = True
 
-# Fourier Encoding Hyperparameters (tune these for better PSNR)
-pe_learnable_freqs = True  # Make frequency bands learnable (default: True)
-pe_init_scale = 1.0  # Initial scale for frequency initialization (default: 1.0, try 0.5-2.0)
-pe_lr_scale = 0.8  # PE learning rate relative to network LR (increased for faster adaptation)
-learnable_pe_phase = True  # Make phase shifts learnable (enabled for more flexibility)
+# Increased frequency bands for higher frequency details
+multires = 15  # Increased from 10 to capture more high-frequency details
+multires_views = 6  # Increased from 4 for better view-dependent effects (specular highlights)
 
-# Learning rate (increased for faster convergence)
-lrate = 1e-3
+# Fourier Encoding Hyperparameters (optimized for high PSNR)
+pe_learnable_freqs = True  # Make frequency bands learnable
+pe_init_scale = 0.75  # Slightly higher than 0.5 to start with more frequencies (better for high quality)
+pe_lr_scale = 0.8  # PE learning rate relative to network LR
+learnable_pe_phase = True  # Make phase shifts learnable for maximum flexibility
+
+# Learning rate (slightly reduced for stability with higher quality settings)
+lrate = 8e-4  # Slightly reduced from 1e-3 for stability with high quality settings
 
 # Learning rate decay (slower decay to maintain learning longer)
-lrate_decay = 500
+lrate_decay = 500  # Maintains learning for longer training
 
-# Gradient clipping (reduced to allow larger updates)
-grad_clip = 0.0
+# Gradient clipping (disabled for maximum learning, but can enable if unstable)
+grad_clip = 0.0  # No clipping for maximum learning (set to 1.0 if training becomes unstable)
 
-# Weights & Biases logging (optional)
+# Weights & Biases logging
 use_wandb = True
 wandb_project = nerf-idl
-wandb_run_name = flower_test_with fourier Encoding
+wandb_run_name = flower_high_quality_multires15_samples128
 
 

@@ -13,3 +13,27 @@ N_importance = 64
 use_viewdirs = True
 raw_noise_std = 1e0
 
+# Learnable Fourier Encoding (improves PSNR)
+learnable_pe = True
+
+# Fourier Encoding Hyperparameters (tune these for better PSNR)
+pe_learnable_freqs = True  # Make frequency bands learnable (default: True)
+pe_init_scale = 1.0  # Initial scale for frequency initialization (default: 1.0, try 0.5-2.0)
+pe_lr_scale = 0.8  # PE learning rate relative to network LR (increased for faster adaptation)
+learnable_pe_phase = True  # Make phase shifts learnable (enabled for more flexibility)
+
+# Learning rate (increased for faster convergence)
+lrate = 1e-3
+
+# Learning rate decay (slower decay to maintain learning longer)
+lrate_decay = 500
+
+# Gradient clipping (reduced to allow larger updates)
+grad_clip = 0.0
+
+# Weights & Biases logging (optional)
+use_wandb = True
+wandb_project = nerf-idl
+wandb_run_name = room_test_with fourier Encoding
+
+
