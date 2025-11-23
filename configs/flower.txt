@@ -24,14 +24,15 @@ learnable_pe = True
 multires = 18  # Increased from 15 for even more frequency capacity (try 15-20 range)
 multires_views = 8  # Increased from 6 for better view-dependent effects (try 6-10 range)
 
-# Fourier Encoding Hyperparameters (AGGRESSIVE settings to force PE learning)
+# Fourier Encoding Hyperparameters (ULTRA-AGGRESSIVE to force proportional learning)
 pe_learnable_freqs = True  # Must be True for learnable frequencies
-pe_init_scale = 0.5  # Start LOWER to force adaptation (0.5 forces more learning)
-pe_lr_scale = 1.5  # HIGHER LR for PE to force adaptation (1.5 = 50% higher than network)
+pe_init_scale = 0.5  # Start LOWER to force adaptation
+pe_lr_scale = 3.0  # MUCH HIGHER LR for PE (3x network LR) - forces high freq learning
+pe_grad_amplify = 50.0  # Amplify PE gradients 50x (gradients are too small: 0.002-0.004)
 learnable_pe_phase = True  # Enable learnable phases
 
 # Learning rate - increased for better PE learning
-lrate = 1.2e-3  # Slightly higher base LR (was 1e-3)
+lrate = 1.5e-3  # Higher base LR to allow more PE adaptation
 
 # Learning rate decay - MUCH slower to allow PE to keep learning
 lrate_decay = 1000  # Much slower decay (was 500) - keeps PE learning longer
@@ -42,6 +43,6 @@ grad_clip = 0.0  # No clipping for maximum learning (set to 1.0 if training beco
 # Weights & Biases logging
 use_wandb = True
 wandb_project = nerf-idl
-wandb_run_name = flower_aggressive_pe_lr1.5_init0.5
+wandb_run_name = flower_ultra_aggressive_pe_lr3.0
 
 

@@ -575,6 +575,8 @@ def config_parser():
                         help='initial scale for frequency initialization (default: 1.0)')
     parser.add_argument("--pe_lr_scale", type=float, default=0.5,
                         help='learning rate scale for PE parameters relative to network (default: 0.5)')
+    parser.add_argument("--pe_grad_amplify", type=float, default=1.0,
+                        help='amplify PE gradients by this factor to force learning (default: 1.0, try 10-100 if gradients are too small)')
     parser.add_argument("--raw_noise_std", type=float, default=0., 
                         help='std dev of noise added to regularize sigma_a output, 1e0 recommended')
 
@@ -897,6 +899,21 @@ def train():
         trans = extras['raw'][...,-1]
         loss = img_loss
         psnr = mse2psnr(img_loss)
+        
+        # Add frequency diversity regularization to prevent frequency collapse
+        # This encourages frequencies to stay spread out (increases freq_std)
+        if args.learnable_pe and isinstance(embed_fn, nn.Module) and hasattr(embed_fn, 'freq_bands'):
+            freq_bands = embed_fn.freq_bands
+            # Penalize frequencies being too close together
+            # Sort frequencies and penalize small differences
+            freq_sorted = torch.sort(freq_bands)[0]
+            freq_diffs = freq_sorted[1:] - freq_sorted[:-1]
+            # Encourage minimum spacing between frequencies
+            min_spacing = 0.1  # Minimum relative spacing
+            freq_diversity_loss = -torch.mean(torch.log(freq_diffs + 1e-8))  # Negative log encourages spacing
+            # Scale by a small weight to not dominate main loss
+            freq_diversity_weight = 1e-4
+            loss = loss + freq_diversity_weight * freq_diversity_loss
 
         if 'rgb0' in extras:
             img_loss0 = img2mse(extras['rgb0'], target_s)
@@ -905,6 +922,19 @@ def train():
 
         loss.backward()
         
+        # Amplify PE gradients to force learning (if gradients are too small)
+        if args.learnable_pe:
+            pe_grad_amplify = getattr(args, 'pe_grad_amplify', 1.0)
+            if pe_grad_amplify > 1.0:
+                if isinstance(embed_fn, nn.Module):
+                    for param in embed_fn.parameters():
+                        if param.grad is not None:
+                            param.grad.data *= pe_grad_amplify
+                if embeddirs_fn is not None and isinstance(embeddirs_fn, nn.Module):
+                    for param in embeddirs_fn.parameters():
+                        if param.grad is not None:
+                            param.grad.data *= pe_grad_amplify
+        
         # Gradient clipping for stability (helps with learnable PE)
         if args.grad_clip > 0:
             torch.nn.utils.clip_grad_norm_(grad_vars, args.grad_clip)
@@ -912,17 +942,50 @@ def train():
         # Check for NaN/Inf gradients and compute gradient norm
         grad_norm = 0.0
         has_nan = False
+        pe_grad_norm = 0.0
+        
+        # Get PE parameter IDs for comparison
+        pe_param_ids = set()
+        if args.learnable_pe:
+            if isinstance(embed_fn, nn.Module):
+                pe_param_ids.update(id(p) for p in embed_fn.parameters())
+            if embeddirs_fn is not None and isinstance(embeddirs_fn, nn.Module):
+                pe_param_ids.update(id(p) for p in embeddirs_fn.parameters())
+        
         for param in grad_vars:
             if param.grad is not None:
                 param_norm = param.grad.data.norm(2)
                 grad_norm += param_norm.item() ** 2
                 if torch.isnan(param.grad).any() or torch.isinf(param.grad).any():
                     has_nan = True
+                
+                # Check if this is a PE parameter using ID comparison
+                if args.learnable_pe and id(param) in pe_param_ids:
+                    pe_grad_norm += param_norm.item() ** 2
+        
         grad_norm = grad_norm ** (1. / 2)
+        pe_grad_norm = pe_grad_norm ** (1. / 2) if pe_grad_norm > 0 else 0.0
+        
         if has_nan:
             print(f"WARNING: NaN/Inf gradients detected at iteration {i}!")
             if args.use_wandb:
                 wandb.log({'train/grad_nan_warning': 1}, step=global_step)
+        
+        # Diagnostic: Log PE gradient information
+        if args.learnable_pe and i % args.i_print == 0:
+            pe_param_count = len(pe_param_ids)
+            pe_grad_count = sum(1 for p_id in pe_param_ids 
+                               for param in grad_vars 
+                               if id(param) == p_id and param.grad is not None)
+            print(f"PE Diagnostics - Params: {pe_param_count}, Grads: {pe_grad_count}, PE Grad Norm: {pe_grad_norm:.6f}, Total Grad Norm: {grad_norm:.6f}")
+            if isinstance(embed_fn, nn.Module) and hasattr(embed_fn, 'freq_bands'):
+                freq_bands = embed_fn.freq_bands.data.cpu().numpy()
+                print(f"  Freq bands range: [{freq_bands.min():.3f}, {freq_bands.max():.3f}], std: {freq_bands.std():.3f}")
+                if embed_fn.freq_bands.grad is not None:
+                    freq_grad_norm = embed_fn.freq_bands.grad.data.norm(2).item()
+                    print(f"  Freq bands grad norm: {freq_grad_norm:.6f}")
+                else:
+                    print(f"  WARNING: freq_bands has NO gradient!")
         
         optimizer.step()
 
@@ -962,6 +1025,8 @@ def train():
                 log_dict['train/psnr0'] = psnr0.item()
             if args.learnable_pe and len(optimizer.param_groups) > 1:
                 log_dict['train/pe_learning_rate'] = new_pe_lrate
+                log_dict['train/pe_grad_norm'] = pe_grad_norm
+                log_dict['train/pe_grad_ratio'] = pe_grad_norm / (grad_norm + 1e-8)  # Ratio of PE grads to total grads
                 
                 # Log PE parameter values to monitor learning
                 # Log frequency values for position encoding
