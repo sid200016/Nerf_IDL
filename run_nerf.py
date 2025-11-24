@@ -577,6 +577,8 @@ def config_parser():
                         help='learning rate scale for PE parameters relative to network (default: 0.5)')
     parser.add_argument("--pe_grad_amplify", type=float, default=1.0,
                         help='amplify PE gradients by this factor to force learning (default: 1.0, try 10-100 if gradients are too small)')
+    parser.add_argument("--pe_direct_update", type=float, default=0.0,
+                        help='direct parameter update magnitude for frequencies (default: 0.0, try 0.001-0.01 to force exploration)')
     parser.add_argument("--raw_noise_std", type=float, default=0., 
                         help='std dev of noise added to regularize sigma_a output, 1e0 recommended')
 
@@ -923,17 +925,49 @@ def train():
         loss.backward()
         
         # Amplify PE gradients to force learning (if gradients are too small)
+        # Use frequency-proportional scaling so high frequencies get larger updates
         if args.learnable_pe:
             pe_grad_amplify = getattr(args, 'pe_grad_amplify', 1.0)
             if pe_grad_amplify > 1.0:
                 if isinstance(embed_fn, nn.Module):
-                    for param in embed_fn.parameters():
-                        if param.grad is not None:
-                            param.grad.data *= pe_grad_amplify
+                    # Handle log-space frequencies (proportional updates)
+                    if hasattr(embed_fn, 'log_freq_bands'):
+                        # In log space, gradients are already proportional - just amplify
+                        if embed_fn.log_freq_bands.grad is not None:
+                            embed_fn.log_freq_bands.grad.data *= pe_grad_amplify
+                    elif hasattr(embed_fn, 'freq_bands'):
+                        # Linear space - need proportional scaling
+                        freq_bands = embed_fn.freq_bands.data
+                        if embed_fn.freq_bands.grad is not None:
+                            # Scale each frequency gradient by its frequency value (proportional scaling)
+                            # More aggressive: scale by log of frequency to make high freqs learn faster
+                            freq_scaling = torch.clamp(freq_bands.abs(), min=1.0)  # At least 1.0 to avoid tiny scales
+                            # Use log scaling for more aggressive high-frequency learning
+                            freq_scaling = torch.log(freq_scaling + 1.0)  # Log scale: high freqs get more boost
+                            freq_scaling = freq_scaling / freq_scaling.mean()  # Normalize
+                            # Additional boost for high frequencies
+                            freq_scaling = freq_scaling * (1.0 + 0.5 * (freq_bands / freq_bands.max()))  # Extra boost for high freqs
+                            embed_fn.freq_bands.grad.data *= pe_grad_amplify * freq_scaling
+                    
+                    # Amplify phase gradients normally
+                    if hasattr(embed_fn, 'phase_shifts') and embed_fn.phase_shifts.grad is not None:
+                        embed_fn.phase_shifts.grad.data *= pe_grad_amplify
+                
+                # For view direction encoding, do the same
                 if embeddirs_fn is not None and isinstance(embeddirs_fn, nn.Module):
-                    for param in embeddirs_fn.parameters():
-                        if param.grad is not None:
-                            param.grad.data *= pe_grad_amplify
+                    if hasattr(embeddirs_fn, 'log_freq_bands'):
+                        # Log space - just amplify
+                        if embeddirs_fn.log_freq_bands.grad is not None:
+                            embeddirs_fn.log_freq_bands.grad.data *= pe_grad_amplify
+                    elif hasattr(embeddirs_fn, 'freq_bands'):
+                        view_freq_bands = embeddirs_fn.freq_bands.data
+                        if embeddirs_fn.freq_bands.grad is not None:
+                            view_freq_scaling = torch.clamp(view_freq_bands.abs(), min=1.0)
+                            view_freq_scaling = view_freq_scaling / view_freq_scaling.mean()
+                            embeddirs_fn.freq_bands.grad.data *= pe_grad_amplify * view_freq_scaling
+                    
+                    if hasattr(embeddirs_fn, 'phase_shifts') and embeddirs_fn.phase_shifts.grad is not None:
+                        embeddirs_fn.phase_shifts.grad.data *= pe_grad_amplify
         
         # Gradient clipping for stability (helps with learnable PE)
         if args.grad_clip > 0:
@@ -978,16 +1012,58 @@ def train():
                                for param in grad_vars 
                                if id(param) == p_id and param.grad is not None)
             print(f"PE Diagnostics - Params: {pe_param_count}, Grads: {pe_grad_count}, PE Grad Norm: {pe_grad_norm:.6f}, Total Grad Norm: {grad_norm:.6f}")
-            if isinstance(embed_fn, nn.Module) and hasattr(embed_fn, 'freq_bands'):
-                freq_bands = embed_fn.freq_bands.data.cpu().numpy()
-                print(f"  Freq bands range: [{freq_bands.min():.3f}, {freq_bands.max():.3f}], std: {freq_bands.std():.3f}")
-                if embed_fn.freq_bands.grad is not None:
-                    freq_grad_norm = embed_fn.freq_bands.grad.data.norm(2).item()
-                    print(f"  Freq bands grad norm: {freq_grad_norm:.6f}")
-                else:
-                    print(f"  WARNING: freq_bands has NO gradient!")
+            if isinstance(embed_fn, nn.Module):
+                # Handle both log-space and linear-space
+                if hasattr(embed_fn, 'log_freq_bands'):
+                    freq_bands = (torch.exp(embed_fn.log_freq_bands.data) - 1e-8).cpu().numpy()
+                    print(f"  Freq bands (from log space) range: [{freq_bands.min():.3f}, {freq_bands.max():.3f}], std: {freq_bands.std():.3f}")
+                    if embed_fn.log_freq_bands.grad is not None:
+                        freq_grad_norm = embed_fn.log_freq_bands.grad.data.norm(2).item()
+                        print(f"  Log freq bands grad norm: {freq_grad_norm:.6f}")
+                    else:
+                        print(f"  WARNING: log_freq_bands has NO gradient!")
+                elif hasattr(embed_fn, 'freq_bands'):
+                    freq_bands = embed_fn.freq_bands.data.cpu().numpy()
+                    print(f"  Freq bands range: [{freq_bands.min():.3f}, {freq_bands.max():.3f}], std: {freq_bands.std():.3f}")
+                    if embed_fn.freq_bands.grad is not None:
+                        freq_grad_norm = embed_fn.freq_bands.grad.data.norm(2).item()
+                        print(f"  Freq bands grad norm: {freq_grad_norm:.6f}")
+                    else:
+                        print(f"  WARNING: freq_bands has NO gradient!")
         
         optimizer.step()
+        
+        # Direct parameter update for frequencies if gradient amplification isn't enough
+        # This forces frequencies to change even if gradients are small
+        if args.learnable_pe:
+            pe_direct_update = getattr(args, 'pe_direct_update', 0.0)
+            if pe_direct_update > 0.0:
+                # Apply small direct updates to frequencies to force learning
+                if isinstance(embed_fn, nn.Module):
+                    with torch.no_grad():
+                        if hasattr(embed_fn, 'log_freq_bands'):
+                            # In log space, updates are already proportional
+                            log_freq_noise = torch.randn_like(embed_fn.log_freq_bands) * pe_direct_update
+                            embed_fn.log_freq_bands.data += log_freq_noise
+                        elif hasattr(embed_fn, 'freq_bands'):
+                            # Linear space - need proportional scaling
+                            freq_noise = torch.randn_like(embed_fn.freq_bands) * pe_direct_update
+                            freq_scale = torch.clamp(embed_fn.freq_bands.abs(), min=1.0)
+                            freq_scale = freq_scale / freq_scale.mean()
+                            freq_noise = freq_noise * freq_scale
+                            embed_fn.freq_bands.data += freq_noise
+                        
+                if embeddirs_fn is not None and isinstance(embeddirs_fn, nn.Module):
+                    with torch.no_grad():
+                        if hasattr(embeddirs_fn, 'log_freq_bands'):
+                            view_log_freq_noise = torch.randn_like(embeddirs_fn.log_freq_bands) * pe_direct_update
+                            embeddirs_fn.log_freq_bands.data += view_log_freq_noise
+                        elif hasattr(embeddirs_fn, 'freq_bands'):
+                            view_freq_noise = torch.randn_like(embeddirs_fn.freq_bands) * pe_direct_update
+                            view_freq_scale = torch.clamp(embeddirs_fn.freq_bands.abs(), min=1.0)
+                            view_freq_scale = view_freq_scale / view_freq_scale.mean()
+                            view_freq_noise = view_freq_noise * view_freq_scale
+                            embeddirs_fn.freq_bands.data += view_freq_noise
 
         # NOTE: IMPORTANT!
         ###   update learning rate   ###
@@ -1030,36 +1106,53 @@ def train():
                 
                 # Log PE parameter values to monitor learning
                 # Log frequency values for position encoding
-                if isinstance(embed_fn, nn.Module) and hasattr(embed_fn, 'freq_bands'):
-                    freq_bands = embed_fn.freq_bands.data.cpu().numpy()
-                    # Log ALL frequency bands
-                    for i in range(len(freq_bands)):
-                        log_dict[f'pe/pos_freq_{i}'] = float(freq_bands[i])
-                    log_dict['pe/pos_freq_mean'] = float(freq_bands.mean())
-                    log_dict['pe/pos_freq_std'] = float(freq_bands.std())
-                    log_dict['pe/pos_freq_min'] = float(freq_bands.min())
-                    log_dict['pe/pos_freq_max'] = float(freq_bands.max())
+                if isinstance(embed_fn, nn.Module):
+                    # Handle both log-space and linear-space frequencies
+                    if hasattr(embed_fn, 'log_freq_bands'):
+                        # Convert from log space
+                        freq_bands = (torch.exp(embed_fn.log_freq_bands.data) - 1e-8).cpu().numpy()
+                    elif hasattr(embed_fn, 'freq_bands'):
+                        freq_bands = embed_fn.freq_bands.data.cpu().numpy()
+                    else:
+                        freq_bands = None
                     
-                    # Log phase shift statistics if learnable
-                    if hasattr(embed_fn, 'phase_shifts') and embed_fn.learnable_phase:
-                        phase_shifts = embed_fn.phase_shifts.data.cpu().numpy()
-                        log_dict['pe/pos_phase_std'] = float(phase_shifts.std())
-                        log_dict['pe/pos_phase_mean'] = float(phase_shifts.mean())
-                        log_dict['pe/pos_phase_max_abs'] = float(np.abs(phase_shifts).max())
+                    if freq_bands is not None:
+                        # Log ALL frequency bands
+                        for i in range(len(freq_bands)):
+                            log_dict[f'pe/pos_freq_{i}'] = float(freq_bands[i])
+                        log_dict['pe/pos_freq_mean'] = float(freq_bands.mean())
+                        log_dict['pe/pos_freq_std'] = float(freq_bands.std())
+                        log_dict['pe/pos_freq_min'] = float(freq_bands.min())
+                        log_dict['pe/pos_freq_max'] = float(freq_bands.max())
+                        
+                        # Log phase shift statistics if learnable
+                        if hasattr(embed_fn, 'phase_shifts') and embed_fn.learnable_phase:
+                            phase_shifts = embed_fn.phase_shifts.data.cpu().numpy()
+                            log_dict['pe/pos_phase_std'] = float(phase_shifts.std())
+                            log_dict['pe/pos_phase_mean'] = float(phase_shifts.mean())
+                            log_dict['pe/pos_phase_max_abs'] = float(np.abs(phase_shifts).max())
                 
                 # Log frequency values for view direction encoding
-                if embeddirs_fn is not None and isinstance(embeddirs_fn, nn.Module) and hasattr(embeddirs_fn, 'freq_bands'):
-                    view_freq_bands = embeddirs_fn.freq_bands.data.cpu().numpy()
-                    # Log ALL view frequency bands
-                    for i in range(len(view_freq_bands)):
-                        log_dict[f'pe/view_freq_{i}'] = float(view_freq_bands[i])
-                    log_dict['pe/view_freq_mean'] = float(view_freq_bands.mean())
-                    log_dict['pe/view_freq_std'] = float(view_freq_bands.std())
+                if embeddirs_fn is not None and isinstance(embeddirs_fn, nn.Module):
+                    # Handle both log-space and linear-space
+                    if hasattr(embeddirs_fn, 'log_freq_bands'):
+                        view_freq_bands = (torch.exp(embeddirs_fn.log_freq_bands.data) - 1e-8).cpu().numpy()
+                    elif hasattr(embeddirs_fn, 'freq_bands'):
+                        view_freq_bands = embeddirs_fn.freq_bands.data.cpu().numpy()
+                    else:
+                        view_freq_bands = None
                     
-                    if hasattr(embeddirs_fn, 'phase_shifts') and embeddirs_fn.learnable_phase:
-                        view_phase_shifts = embeddirs_fn.phase_shifts.data.cpu().numpy()
-                        log_dict['pe/view_phase_std'] = float(view_phase_shifts.std())
-                        log_dict['pe/view_phase_max_abs'] = float(np.abs(view_phase_shifts).max())
+                    if view_freq_bands is not None:
+                        # Log ALL view frequency bands
+                        for i in range(len(view_freq_bands)):
+                            log_dict[f'pe/view_freq_{i}'] = float(view_freq_bands[i])
+                        log_dict['pe/view_freq_mean'] = float(view_freq_bands.mean())
+                        log_dict['pe/view_freq_std'] = float(view_freq_bands.std())
+                        
+                        if hasattr(embeddirs_fn, 'phase_shifts') and embeddirs_fn.learnable_phase:
+                            view_phase_shifts = embeddirs_fn.phase_shifts.data.cpu().numpy()
+                            log_dict['pe/view_phase_std'] = float(view_phase_shifts.std())
+                            log_dict['pe/view_phase_max_abs'] = float(np.abs(view_phase_shifts).max())
             
             # Add GPU memory usage if available
             if torch.cuda.is_available():

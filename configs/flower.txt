@@ -28,7 +28,8 @@ multires_views = 8  # Increased from 6 for better view-dependent effects (try 6-
 pe_learnable_freqs = True  # Must be True for learnable frequencies
 pe_init_scale = 0.5  # Start LOWER to force adaptation
 pe_lr_scale = 3.0  # MUCH HIGHER LR for PE (3x network LR) - forces high freq learning
-pe_grad_amplify = 50.0  # Amplify PE gradients 50x (gradients are too small: 0.002-0.004)
+pe_grad_amplify = 200.0  # Amplify PE gradients 200x (very aggressive - forces high freq learning)
+pe_direct_update = 0.005  # Direct parameter updates to force frequency exploration (0.005 = 0.5% updates)
 learnable_pe_phase = True  # Enable learnable phases
 
 # Learning rate - increased for better PE learning
@@ -43,6 +44,6 @@ grad_clip = 0.0  # No clipping for maximum learning (set to 1.0 if training beco
 # Weights & Biases logging
 use_wandb = True
 wandb_project = nerf-idl
-wandb_run_name = flower_ultra_aggressive_pe_lr3.0
+wandb_run_name = flower_pe_grad200x_log_scaled
 
 

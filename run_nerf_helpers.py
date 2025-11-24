@@ -71,11 +71,17 @@ class LearnableFourierEmbedder(nn.Module):
         freq_bands = 2.**torch.linspace(0., num_freqs-1, steps=num_freqs) * init_scale
         
         if learnable_freqs:
-            # Make frequencies learnable parameters
-            self.freq_bands = nn.Parameter(freq_bands)
+            # Store frequencies in LOG SPACE for proportional learning
+            # This ensures all frequencies update proportionally regardless of magnitude
+            # log_freq_bands will be the learnable parameter
+            log_freq_bands = torch.log(freq_bands + 1e-8)  # Add small epsilon for numerical stability
+            self.log_freq_bands = nn.Parameter(log_freq_bands)
+            # freq_bands is computed from log_freq_bands in forward pass
+            self.register_buffer('_freq_scale', torch.ones(1))  # For compatibility
         else:
             # Keep frequencies fixed
             self.register_buffer('freq_bands', freq_bands)
+            self.log_freq_bands = None
         
         # Initialize phase shifts to zero
         if learnable_phase:
@@ -103,8 +109,15 @@ class LearnableFourierEmbedder(nn.Module):
         if self.include_input:
             outputs.append(inputs)
         
+        # Get frequency bands (from log space if learnable)
+        if self.learnable_freqs and hasattr(self, 'log_freq_bands'):
+            # Convert from log space to linear space for proportional updates
+            freq_bands = torch.exp(self.log_freq_bands) - 1e-8  # Inverse of log
+        else:
+            freq_bands = self.freq_bands
+        
         # Apply learnable Fourier features
-        for i, freq in enumerate(self.freq_bands):
+        for i, freq in enumerate(freq_bands):
             # Compute frequency-scaled inputs: [..., input_dims]
             scaled_inputs = inputs * freq
             
