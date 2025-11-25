@@ -48,7 +48,7 @@ class Embedder:
 # Learnable Fourier Feature Encoding
 class LearnableFourierEmbedder(nn.Module):
     def __init__(self, input_dims=3, num_freqs=10, include_input=True, 
-                 learnable_freqs=True, learnable_phase=False, init_scale=1.0):
+                 learnable_freqs=True, learnable_phase=False, init_scale=1.0, use_gating=False):
         """
         Learnable Fourier Feature Encoding for NeRF
         
@@ -59,6 +59,7 @@ class LearnableFourierEmbedder(nn.Module):
             learnable_freqs: Make frequency bands learnable
             learnable_phase: Make phase shifts learnable
             init_scale: Initial scale for frequency initialization
+            use_gating: If True, use learnable per-frequency amplitude gates
         """
         super(LearnableFourierEmbedder, self).__init__()
         self.input_dims = input_dims
@@ -66,6 +67,7 @@ class LearnableFourierEmbedder(nn.Module):
         self.include_input = include_input
         self.learnable_freqs = learnable_freqs
         self.learnable_phase = learnable_phase
+        self.use_gating = use_gating
         
         # Initialize frequency bands (log-spaced like original NeRF)
         freq_bands = 2.**torch.linspace(0., num_freqs-1, steps=num_freqs) * init_scale
@@ -89,6 +91,19 @@ class LearnableFourierEmbedder(nn.Module):
             self.phase_shifts = nn.Parameter(torch.zeros(num_freqs, input_dims, 2))
         else:
             self.register_buffer('phase_shifts', torch.zeros(num_freqs, input_dims, 2))
+        
+        # Per-frequency amplitude gates (learnable)
+        if use_gating:
+            # Initialize: low-freq gates ~1, high-freq gates ~0.1 (soft progressive encoding)
+            amp_gates_init = torch.ones(num_freqs)
+            # Make high-frequency gates smaller initially
+            for i in range(num_freqs):
+                if i > num_freqs // 2:
+                    amp_gates_init[i] = 0.1
+            # Store in log space for positive amplitudes
+            self.amp_gates = nn.Parameter(torch.log(amp_gates_init + 1e-8))
+        else:
+            self.amp_gates = None
         
         # Calculate output dimension
         out_dim = 0
@@ -121,21 +136,27 @@ class LearnableFourierEmbedder(nn.Module):
             # Compute frequency-scaled inputs: [..., input_dims]
             scaled_inputs = inputs * freq
             
+            # Get amplitude gate for this frequency
+            if self.use_gating and self.amp_gates is not None:
+                gate = torch.exp(self.amp_gates[i])
+            else:
+                gate = 1.0
+            
             if self.learnable_phase:
                 # Add learnable phase shifts
                 sin_phase = self.phase_shifts[i, :, 0]  # [input_dims]
                 cos_phase = self.phase_shifts[i, :, 1]  # [input_dims]
-                outputs.append(torch.sin(scaled_inputs + sin_phase))
-                outputs.append(torch.cos(scaled_inputs + cos_phase))
+                outputs.append(gate * torch.sin(scaled_inputs + sin_phase))
+                outputs.append(gate * torch.cos(scaled_inputs + cos_phase))
             else:
-                outputs.append(torch.sin(scaled_inputs))
-                outputs.append(torch.cos(scaled_inputs))
+                outputs.append(gate * torch.sin(scaled_inputs))
+                outputs.append(gate * torch.cos(scaled_inputs))
         
         return torch.cat(outputs, -1)
 
 
 def get_embedder(multires, i=0, learnable=False, learnable_phase=False, 
-                 learnable_freqs=True, init_scale=1.0):
+                 learnable_freqs=True, init_scale=1.0, use_gating=False):
     """
     Get embedder function for positional encoding
     
@@ -146,6 +167,7 @@ def get_embedder(multires, i=0, learnable=False, learnable_phase=False,
         learnable_phase: Make phase shifts learnable (only if learnable=True)
         learnable_freqs: Make frequency bands learnable (only if learnable=True)
         init_scale: Initial scale for frequency initialization (only if learnable=True)
+        use_gating: Use per-frequency amplitude gates (only if learnable=True)
     
     Returns:
         embed: Embedding function or module
@@ -162,7 +184,8 @@ def get_embedder(multires, i=0, learnable=False, learnable_phase=False,
             include_input=True,
             learnable_freqs=learnable_freqs,
             learnable_phase=learnable_phase,
-            init_scale=init_scale
+            init_scale=init_scale,
+            use_gating=use_gating
         )
         return embedder_obj, embedder_obj.out_dim
     else:
@@ -183,8 +206,10 @@ def get_embedder(multires, i=0, learnable=False, learnable_phase=False,
 
 # Model
 class NeRF(nn.Module):
-    def __init__(self, D=8, W=256, input_ch=3, input_ch_views=3, output_ch=4, skips=[4], use_viewdirs=False):
+    def __init__(self, D=8, W=256, input_ch=3, input_ch_views=3, output_ch=4, skips=[4], use_viewdirs=False, use_film=False):
         """ 
+        Args:
+            use_film: If True, use FiLM-style conditioning instead of concatenation
         """
         super(NeRF, self).__init__()
         self.D = D
@@ -193,21 +218,34 @@ class NeRF(nn.Module):
         self.input_ch_views = input_ch_views
         self.skips = skips
         self.use_viewdirs = use_viewdirs
+        self.use_film = use_film
         
         self.pts_linears = nn.ModuleList(
             [nn.Linear(input_ch, W)] + [nn.Linear(W, W) if i not in self.skips else nn.Linear(W + input_ch, W) for i in range(D-1)])
         
-        ### Implementation according to the official code release (https://github.com/bmild/nerf/blob/master/run_nerf_helpers.py#L104-L105)
-        self.views_linears = nn.ModuleList([nn.Linear(input_ch_views + W, W//2)])
-
-        ### Implementation according to the paper
-        # self.views_linears = nn.ModuleList(
-        #     [nn.Linear(input_ch_views + W, W//2)] + [nn.Linear(W//2, W//2) for i in range(D//2)])
-        
         if use_viewdirs:
             self.feature_linear = nn.Linear(W, W)
             self.alpha_linear = nn.Linear(W, 1)
-            self.rgb_linear = nn.Linear(W//2, 3)
+            
+            if use_film:
+                # FiLM-style conditioning: direction MLP generates gamma and beta
+                self.dir_mlp = nn.Sequential(
+                    nn.Linear(input_ch_views, W),
+                    nn.ReLU(inplace=True),
+                    nn.Linear(W, 2 * W),  # -> gamma and beta
+                )
+                self.color_mlp = nn.Sequential(
+                    nn.Linear(W, W),
+                    nn.ReLU(inplace=True),
+                    nn.Linear(W, 3),
+                )
+            else:
+                # Deeper view MLP (paper-style): 2 layers instead of 1
+                self.views_linears = nn.ModuleList([
+                    nn.Linear(input_ch_views + W, W // 2),
+                    nn.Linear(W // 2, W // 2),
+                ])
+                self.rgb_linear = nn.Linear(W // 2, 3)
         else:
             self.output_linear = nn.Linear(W, output_ch)
 
@@ -221,16 +259,23 @@ class NeRF(nn.Module):
                 h = torch.cat([input_pts, h], -1)
 
         if self.use_viewdirs:
-            alpha = self.alpha_linear(h)
-            feature = self.feature_linear(h)
-            h = torch.cat([feature, input_views], -1)
-        
-            for i, l in enumerate(self.views_linears):
-                h = self.views_linears[i](h)
-                h = F.relu(h)
-
-            rgb = self.rgb_linear(h)
-            outputs = torch.cat([rgb, alpha], -1)
+            sigma = self.alpha_linear(h)
+            feat = self.feature_linear(h)  # [.., W]
+            
+            if self.use_film:
+                # FiLM modulation by view dir
+                gamma_beta = self.dir_mlp(input_views)  # [.., 2W]
+                gamma, beta = torch.chunk(gamma_beta, 2, dim=-1)
+                feat = gamma * feat + beta
+                rgb = self.color_mlp(feat)
+            else:
+                # Deeper view MLP path
+                h = torch.cat([feat, input_views], -1)
+                for l in self.views_linears:
+                    h = F.relu(l(h))
+                rgb = self.rgb_linear(h)
+            
+            outputs = torch.cat([rgb, sigma], -1)
         else:
             outputs = self.output_linear(h)
 

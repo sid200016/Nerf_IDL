@@ -192,11 +192,13 @@ def create_nerf(args):
     """Instantiate NeRF's MLP model.
     """
     # Create embedders (position encoding)
+    use_gating = getattr(args, 'pe_use_gating', False)  # Optional: enable per-frequency gating
     embed_fn, input_ch = get_embedder(args.multires, args.i_embed, 
                                        learnable=args.learnable_pe,
                                        learnable_phase=args.learnable_pe_phase,
                                        learnable_freqs=getattr(args, 'pe_learnable_freqs', True),
-                                       init_scale=getattr(args, 'pe_init_scale', 1.0))
+                                       init_scale=getattr(args, 'pe_init_scale', 1.0),
+                                       use_gating=use_gating)
 
     input_ch_views = 0
     embeddirs_fn = None
@@ -205,7 +207,8 @@ def create_nerf(args):
                                                      learnable=args.learnable_pe,
                                                      learnable_phase=args.learnable_pe_phase,
                                                      learnable_freqs=getattr(args, 'pe_learnable_freqs', True),
-                                                     init_scale=getattr(args, 'pe_init_scale', 1.0))
+                                                     init_scale=getattr(args, 'pe_init_scale', 1.0),
+                                                     use_gating=use_gating)
     
     # Move embedders to device if they are nn.Modules
     if isinstance(embed_fn, nn.Module):
@@ -215,16 +218,25 @@ def create_nerf(args):
     
     output_ch = 5 if args.N_importance > 0 else 4
     skips = [4]
+    use_film = getattr(args, 'use_film', True)  # Default to True for FiLM conditioning
     model = NeRF(D=args.netdepth, W=args.netwidth,
                  input_ch=input_ch, output_ch=output_ch, skips=skips,
-                 input_ch_views=input_ch_views, use_viewdirs=args.use_viewdirs).to(device)
+                 input_ch_views=input_ch_views, use_viewdirs=args.use_viewdirs, use_film=use_film).to(device)
+    
+    # Initialize alpha_linear bias to -1.0 for smoother density field
+    if args.use_viewdirs:
+        nn.init.constant_(model.alpha_linear.bias, -1.0)
+    
     grad_vars = list(model.parameters())
 
     model_fine = None
     if args.N_importance > 0:
         model_fine = NeRF(D=args.netdepth_fine, W=args.netwidth_fine,
                           input_ch=input_ch, output_ch=output_ch, skips=skips,
-                          input_ch_views=input_ch_views, use_viewdirs=args.use_viewdirs).to(device)
+                          input_ch_views=input_ch_views, use_viewdirs=args.use_viewdirs, use_film=use_film).to(device)
+        # Initialize alpha_linear bias to -1.0 for smoother density field
+        if args.use_viewdirs:
+            nn.init.constant_(model_fine.alpha_linear.bias, -1.0)
         grad_vars += list(model_fine.parameters())
 
     # Separate parameters for different learning rates
@@ -363,7 +375,7 @@ def raw2outputs(raw, z_vals, rays_d, raw_noise_std=0, white_bkgd=False, pytest=F
         weights: [num_rays, num_samples]. Weights assigned to each sampled color.
         depth_map: [num_rays]. Estimated distance to object.
     """
-    raw2alpha = lambda raw, dists, act_fn=F.relu: 1.-torch.exp(-act_fn(raw)*dists)
+    raw2alpha = lambda raw, dists, act_fn=F.softplus: 1.-torch.exp(-act_fn(raw)*dists)
 
     dists = z_vals[...,1:] - z_vals[...,:-1]
     dists = torch.cat([dists, torch.Tensor([1e10]).expand(dists[...,:1].shape)], -1)  # [N_rays, N_samples]

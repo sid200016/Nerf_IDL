@@ -13,37 +13,47 @@ N_samples = 128  # More coarse samples per ray (doubled from 64)
 N_importance = 128  # More fine samples per ray (doubled from 64)
 
 use_viewdirs = True
-# Regularization - MINIMAL to allow maximum PE adaptation
-raw_noise_std = 1e-3  # Minimal regularization (was 5e-3) - allows more PE learning
+# Regularization - standard NeRF setting
+raw_noise_std = 1e0
+
+# Load weights from fixed-encoding baseline (warmup strategy)
+# Set this to the path of your baseline checkpoint, e.g.:
+# ft_path = ./logs/flower_baseline/200000.tar
+# ft_path = None  # Set to None if training from scratch
+ft_path = None
+
+# Network architecture (wider backbone for better PSNR)
+netwidth = 512  # Increased from 256 for more capacity
+netwidth_fine = 512  # Fine network width
+netdepth = 8
+netdepth_fine = 8
 
 # Learnable Fourier Encoding (optimized for maximum PSNR)
 learnable_pe = True
 
 # Frequency bands - key parameter for PSNR
-# Higher = more high-frequency details, but may overfit
-multires = 18  # Increased from 15 for even more frequency capacity (try 15-20 range)
-multires_views = 8  # Increased from 6 for better view-dependent effects (try 6-10 range)
+# Match the fixed-encoding baseline for fair comparison
+multires = 10  # Same band count as the fixed baseline
+multires_views = 4  # Restored to baseline view-dependent capacity
 
-# Fourier Encoding Hyperparameters (ULTRA-AGGRESSIVE to force proportional learning)
-pe_learnable_freqs = True  # Must be True for learnable frequencies
-pe_init_scale = 0.5  # Start LOWER to force adaptation
-pe_lr_scale = 3.0  # MUCH HIGHER LR for PE (3x network LR) - forces high freq learning
-pe_grad_amplify = 200.0  # Amplify PE gradients 200x (very aggressive - forces high freq learning)
-pe_direct_update = 0.005  # Direct parameter updates to force frequency exploration (0.005 = 0.5% updates)
-learnable_pe_phase = True  # Enable learnable phases
+# Fourier Encoding Hyperparameters (based on commit fc8f4840 - similar to original NeRF)
+pe_learnable_freqs = True  # Make frequency bands learnable (default: True)
+pe_init_scale = 1.0  # Initial scale for frequency initialization (default: 1.0)
+pe_lr_scale = 0.8  # PE learning rate relative to network LR (increased for faster adaptation)
+learnable_pe_phase = True  # Make phase shifts learnable (enabled for more flexibility)
 
-# Learning rate - increased for better PE learning
-lrate = 1.5e-3  # Higher base LR to allow more PE adaptation
+# Learning rate (increased for faster convergence - similar to commit that worked)
+lrate = 1e-3
 
-# Learning rate decay - MUCH slower to allow PE to keep learning
-lrate_decay = 1000  # Much slower decay (was 500) - keeps PE learning longer
+# Learning rate decay (slower decay to maintain learning longer - from working commit)
+lrate_decay = 500
 
-# Gradient clipping (disabled for maximum learning, but can enable if unstable)
-grad_clip = 0.0  # No clipping for maximum learning (set to 1.0 if training becomes unstable)
+# Gradient clipping (reduced to allow larger updates - from working commit)
+grad_clip = 0.0
 
 # Weights & Biases logging
 use_wandb = True
 wandb_project = nerf-idl
-wandb_run_name = flower_pe_grad200x_log_scaled
+wandb_run_name = flower_pe_grad-new
 
 
