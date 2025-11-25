@@ -9,8 +9,8 @@ llffhold = 8
 
 # Increased sampling for better quality
 N_rand = 2048  # Increased batch size for more stable gradients (if memory allows, else 1024)
-N_samples = 128  # More coarse samples per ray (doubled from 64)
-N_importance = 128  # More fine samples per ray (doubled from 64)
+N_samples = 64  # More coarse samples per ray (doubled from 64)
+N_importance = 64  # More fine samples per ray (doubled from 64)
 
 use_viewdirs = True
 # Regularization - standard NeRF setting
@@ -38,15 +38,16 @@ multires_views = 4  # Restored to baseline view-dependent capacity
 
 # Fourier Encoding Hyperparameters (based on commit fc8f4840 - similar to original NeRF)
 pe_learnable_freqs = True  # Make frequency bands learnable (default: True)
+pe_use_gating = True  # Use per-frequency amplitude gates (default: False, set True for soft progressive encoding)
 pe_init_scale = 1.0  # Initial scale for frequency initialization (default: 1.0)
-pe_lr_scale = 0.8  # PE learning rate relative to network LR (increased for faster adaptation)
+pe_lr_scale = 0.3  # PE learning rate relative to network LR (increased for faster adaptation)
 learnable_pe_phase = True  # Make phase shifts learnable (enabled for more flexibility)
 
 # Learning rate (increased for faster convergence - similar to commit that worked)
-lrate = 1e-3
+lrate = 5e-4
 
 # Learning rate decay (slower decay to maintain learning longer - from working commit)
-lrate_decay = 500
+lrate_decay = 250
 
 # Gradient clipping (reduced to allow larger updates - from working commit)
 grad_clip = 0.0
@@ -54,6 +55,6 @@ grad_clip = 0.0
 # Weights & Biases logging
 use_wandb = True
 wandb_project = nerf-idl
-wandb_run_name = flower_pe_grad-new
+wandb_run_name = flower_pe_grad-new_model 
 
 

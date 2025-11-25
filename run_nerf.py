@@ -192,13 +192,12 @@ def create_nerf(args):
     """Instantiate NeRF's MLP model.
     """
     # Create embedders (position encoding)
-    use_gating = getattr(args, 'pe_use_gating', False)  # Optional: enable per-frequency gating
     embed_fn, input_ch = get_embedder(args.multires, args.i_embed, 
                                        learnable=args.learnable_pe,
                                        learnable_phase=args.learnable_pe_phase,
                                        learnable_freqs=getattr(args, 'pe_learnable_freqs', True),
                                        init_scale=getattr(args, 'pe_init_scale', 1.0),
-                                       use_gating=use_gating)
+                                       use_gating=getattr(args, 'pe_use_gating', False))
 
     input_ch_views = 0
     embeddirs_fn = None
@@ -208,7 +207,7 @@ def create_nerf(args):
                                                      learnable_phase=args.learnable_pe_phase,
                                                      learnable_freqs=getattr(args, 'pe_learnable_freqs', True),
                                                      init_scale=getattr(args, 'pe_init_scale', 1.0),
-                                                     use_gating=use_gating)
+                                                     use_gating=getattr(args, 'pe_use_gating', False))
     
     # Move embedders to device if they are nn.Modules
     if isinstance(embed_fn, nn.Module):
@@ -583,6 +582,8 @@ def config_parser():
                         help='make phase shifts learnable in positional encoding')
     parser.add_argument("--pe_learnable_freqs", type=lambda x: str(x).lower() in ['true', '1', 'yes', 'on'], default=True,
                         help='make frequency bands learnable (default: True, set False/0/no/off to disable)')
+    parser.add_argument("--pe_use_gating", type=lambda x: str(x).lower() in ['true', '1', 'yes', 'on'], default=False,
+                        help='use per-frequency amplitude gates in learnable PE (default: False, enables soft progressive encoding)')
     parser.add_argument("--pe_init_scale", type=float, default=1.0,
                         help='initial scale for frequency initialization (default: 1.0)')
     parser.add_argument("--pe_lr_scale", type=float, default=0.5,
