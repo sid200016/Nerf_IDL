@@ -1,6 +1,6 @@
 expname = flower_test_high_quality
 basedir = ./logs
-datadir = ./data/nerf_llff_data/flower
+datadir = Nerf_IDL/data/nerf_llff_data/flower
 dataset_type = llff
 
 # High resolution training (factor 4 = 2x resolution, factor 2 = 4x resolution)
@@ -8,13 +8,13 @@ factor = 4  # Reduced from 8 for higher resolution (2x more pixels)
 llffhold = 8
 
 # Increased sampling for better quality
-N_rand = 2048  # Increased batch size for more stable gradients (if memory allows, else 1024)
-N_samples = 64  # More coarse samples per ray (doubled from 64)
-N_importance = 64  # More fine samples per ray (doubled from 64)
+N_rand = 4096  # Increased batch size for more stable gradients (if memory allows, else 1024)
+N_samples = 128  # More coarse samples per ray (doubled from 64)
+N_importance = 128  # More fine samples per ray (doubled from 64)
 
 use_viewdirs = True
 # Regularization - standard NeRF setting
-raw_noise_std = 1e0
+raw_noise_std = 1e-3
 
 # Load weights from fixed-encoding baseline (warmup strategy)
 # Set this to the path of your baseline checkpoint, e.g.:
@@ -23,8 +23,8 @@ raw_noise_std = 1e0
 ft_path = None
 
 # Network architecture (wider backbone for better PSNR)
-netwidth = 512  # Increased from 256 for more capacity
-netwidth_fine = 512  # Fine network width
+netwidth = 1024  # Increased from 256 for more capacity
+netwidth_fine = 1024  # Fine network width
 netdepth = 8
 netdepth_fine = 8
 
@@ -33,24 +33,24 @@ learnable_pe = True
 
 # Frequency bands - key parameter for PSNR
 # Match the fixed-encoding baseline for fair comparison
-multires = 10  # Same band count as the fixed baseline
+multires = 12  # Same band count as the fixed baseline
 multires_views = 4  # Restored to baseline view-dependent capacity
 
 # Fourier Encoding Hyperparameters (based on commit fc8f4840 - similar to original NeRF)
 pe_learnable_freqs = True  # Make frequency bands learnable (default: True)
 pe_use_gating = True  # Use per-frequency amplitude gates (default: False, set True for soft progressive encoding)
 pe_init_scale = 1.0  # Initial scale for frequency initialization (default: 1.0)
-pe_lr_scale = 0.3  # PE learning rate relative to network LR (increased for faster adaptation)
+pe_lr_scale = 0.1  # PE learning rate relative to network LR (increased for faster adaptation)
 learnable_pe_phase = True  # Make phase shifts learnable (enabled for more flexibility)
 
 # Learning rate (increased for faster convergence - similar to commit that worked)
 lrate = 5e-4
 
 # Learning rate decay (slower decay to maintain learning longer - from working commit)
-lrate_decay = 250
+lrate_decay = 500
 
 # Gradient clipping (reduced to allow larger updates - from working commit)
-grad_clip = 0.0
+grad_clip = 1.0
 
 # Weights & Biases logging
 use_wandb = True
