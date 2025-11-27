@@ -1183,7 +1183,7 @@ def train():
 
         # Rest is logging
         # Save checkpoints every 10000 steps
-        if i % 10000 == 0:
+        if i % 1000 == 0:
             path = os.path.join(basedir, expname, '{:06d}.tar'.format(i))
             ckpt_dict = {
                 'global_step': global_step,
@@ -1199,12 +1199,15 @@ def train():
                     ckpt_dict['embeddirs_fn_state_dict'] = embeddirs_fn.state_dict()
             torch.save(ckpt_dict, path)
             print('Saved checkpoints at', path)
-            
+            wandb.save(path, base_path=basedir)
+            wandb.log({'checkpoint/saved': 1, 'checkpoint/step': global_step}, step=global_step)
+            print(f'Uploaded checkpoint to wandb: step {global_step}')
             # Save checkpoint to wandb
             if args.use_wandb:
-                wandb.save(path, base_path=basedir)
-                wandb.log({'checkpoint/saved': 1, 'checkpoint/step': global_step}, step=global_step)
-                print(f'Uploaded checkpoint to wandb: step {global_step}')
+                # wandb.save(path, base_path=basedir)
+                # wandb.log({'checkpoint/saved': 1, 'checkpoint/step': global_step}, step=global_step)
+                # print(f'Uploaded checkpoint to wandb: step {global_step}')
+                pass
 
         if i%args.i_video==0 and i > 0:
             # Turn on testing mode
