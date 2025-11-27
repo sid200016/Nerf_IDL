@@ -52,6 +52,13 @@ lrate_decay = 250
 # Gradient clipping (reduced to allow larger updates - from working commit)
 grad_clip = 0.0
 
+# Logging intervals
+i_print = 10      # Console printout frequency
+i_img = 100000        # Validation image logging frequency
+i_weights = 100000    # Checkpoint saving frequency
+i_video = 100000      # Video saving frequency
+i_testset = 100000    # Test set saving frequency
+
 # Weights & Biases logging
 use_wandb = True
 wandb_project = nerf-idl

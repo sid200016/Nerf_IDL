@@ -831,6 +831,7 @@ def train():
     print('TRAIN views are', i_train)
     print('TEST views are', i_test)
     print('VAL views are', i_val)
+    print(f'[CONFIG] Logging intervals: i_print={args.i_print}, i_img={args.i_img}, i_weights={args.i_weights}, i_video={args.i_video}, i_testset={args.i_testset}')
 
     # Initialize logging (wandb or tensorboard)
     if args.use_wandb:
@@ -1175,23 +1176,35 @@ def train():
             wandb.log(log_dict, step=global_step)
 
         # Rest is logging
-        # Save checkpoints every 10000 steps
-        if i % 10000 == 0:
-            path = os.path.join(basedir, expname, '{:06d}.tar'.format(i))
+        # Save checkpoints every i_weights steps (check before incrementing global_step)
+        if (global_step + 1) % args.i_weights == 0:
+            # Ensure directory exists
+            ckpt_dir = os.path.join(basedir, expname)
+            os.makedirs(ckpt_dir, exist_ok=True)
+            save_step = global_step + 1
+            path = os.path.join(ckpt_dir, '{:06d}.tar'.format(save_step))
+            print(f'[DEBUG] Attempting to save checkpoint at iteration {i}, global_step {save_step} to {path}')
             ckpt_dict = {
                 'global_step': global_step,
                 'network_fn_state_dict': render_kwargs_train['network_fn'].state_dict(),
-                'network_fine_state_dict': render_kwargs_train['network_fine'].state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
             }
+            # Save fine network if it exists
+            if render_kwargs_train['network_fine'] is not None:
+                ckpt_dict['network_fine_state_dict'] = render_kwargs_train['network_fine'].state_dict()
             # Save embedder parameters if learnable
             if args.learnable_pe:
                 if isinstance(embed_fn, nn.Module):
                     ckpt_dict['embed_fn_state_dict'] = embed_fn.state_dict()
                 if embeddirs_fn is not None and isinstance(embeddirs_fn, nn.Module):
                     ckpt_dict['embeddirs_fn_state_dict'] = embeddirs_fn.state_dict()
-            torch.save(ckpt_dict, path)
-            print('Saved checkpoints at', path)
+            try:
+                torch.save(ckpt_dict, path)
+                print(f'[SUCCESS] Saved checkpoint at {path}')
+            except Exception as e:
+                print(f'[ERROR] Failed to save checkpoint at {path}: {e}')
+                import traceback
+                traceback.print_exc()
             
             # Save checkpoint to wandb
             if args.use_wandb:
@@ -1199,7 +1212,7 @@ def train():
                 wandb.log({'checkpoint/saved': 1, 'checkpoint/step': global_step}, step=global_step)
                 print(f'Uploaded checkpoint to wandb: step {global_step}')
 
-        if i%args.i_video==0 and i > 0:
+        if (global_step + 1) % args.i_video == 0 and global_step > 0:
             # Turn on testing mode
             with torch.no_grad():
                 rgbs, disps = render_path(render_poses, hwf, K, args.chunk, render_kwargs_test)
@@ -1228,7 +1241,7 @@ def train():
                     log_dict['video/spiral_still'] = wandb.Video(still_video_path)
                 wandb.log(log_dict, step=global_step)
 
-        if i%args.i_testset==0 and i > 0:
+        if (global_step + 1) % args.i_testset == 0 and global_step > 0:
             testsavedir = os.path.join(basedir, expname, 'testset_{:06d}'.format(i))
             os.makedirs(testsavedir, exist_ok=True)
             print('test poses shape', poses[i_test].shape)
@@ -1242,7 +1255,7 @@ def train():
 
 
     
-        if i%args.i_print==0:
+        if (global_step + 1) % args.i_print == 0:
             tqdm.write(f"[TRAIN] Iter: {i} Loss: {loss.item():.6f}  PSNR: {psnr.item():.2f}  GradNorm: {grad_norm:.4f}  LR: {new_lrate:.6f}")
             # Logging to tensorboard (wandb already logged every step above)
             if not args.use_wandb:
@@ -1261,7 +1274,7 @@ def train():
                 if args.N_importance > 0:
                     writer.add_scalar('train/psnr0', log_dict['train/psnr0'], global_step)
 
-        if i%args.i_img==0:
+        if (global_step + 1) % args.i_img == 0:
             # Log a rendered validation view (wandb or tensorboard)
             img_i=np.random.choice(i_val)
             target = images[img_i]
@@ -1277,21 +1290,49 @@ def train():
                 lpips_val = lpips_fn(rgb_images, target_images).item()
                 ssim_val = ssim_fn(rgb_images, target_images).item()
             
+            # Save validation images locally
+            val_img_dir = os.path.join(basedir, expname, 'val_images')
+            os.makedirs(val_img_dir, exist_ok=True)
+            save_step = global_step + 1
+            print(f'[DEBUG] Saving validation images at iteration {i}, global_step {save_step} to {val_img_dir}')
+            rgb_np = to8b(rgb.cpu().numpy())
+            target_np = to8b(target.cpu().numpy())
+            disp_np = disp.cpu().numpy()
+            acc_np = acc.cpu().numpy()
+            
+            try:
+                imageio.imwrite(os.path.join(val_img_dir, f'val_rgb_{save_step:06d}.png'), rgb_np)
+                imageio.imwrite(os.path.join(val_img_dir, f'val_rgb_holdout_{save_step:06d}.png'), target_np)
+                imageio.imwrite(os.path.join(val_img_dir, f'val_disp_{save_step:06d}.png'), (disp_np / np.max(disp_np) * 255).astype(np.uint8))
+                imageio.imwrite(os.path.join(val_img_dir, f'val_acc_{save_step:06d}.png'), (acc_np * 255).astype(np.uint8))
+                print(f'[SUCCESS] Saved validation images to {val_img_dir}')
+            except Exception as e:
+                print(f'[ERROR] Failed to save validation images: {e}')
+                import traceback
+                traceback.print_exc()
+            
             # Log images and metrics (wandb or tensorboard)
             if args.use_wandb:
                 log_dict = {
                     'val/psnr_holdout': psnr_holdout.item(),
                     'val/lpips': lpips_val,
                     'val/ssim': ssim_val,
-                    'val/rgb': wandb.Image(to8b(rgb.cpu().numpy())),
-                    'val/rgb_holdout': wandb.Image(to8b(target.cpu().numpy())),
-                    'val/disp': wandb.Image(disp.cpu().numpy()),
-                    'val/acc': wandb.Image(acc.cpu().numpy()),
+                    'val/rgb': wandb.Image(rgb_np),
+                    'val/rgb_holdout': wandb.Image(target_np),
+                    'val/disp': wandb.Image(disp_np),
+                    'val/acc': wandb.Image(acc_np),
                 }
                 if args.N_importance > 0:
-                    log_dict['val/rgb0'] = wandb.Image(to8b(extras['rgb0'].cpu().numpy()))
-                    log_dict['val/disp0'] = wandb.Image(extras['disp0'].cpu().numpy())
-                    log_dict['val/z_std'] = wandb.Image(extras['z_std'].cpu().numpy())
+                    rgb0_np = to8b(extras['rgb0'].cpu().numpy())
+                    disp0_np = extras['disp0'].cpu().numpy()
+                    z_std_np = extras['z_std'].cpu().numpy()
+                    log_dict['val/rgb0'] = wandb.Image(rgb0_np)
+                    log_dict['val/disp0'] = wandb.Image(disp0_np)
+                    log_dict['val/z_std'] = wandb.Image(z_std_np)
+                    # Also save locally
+                    imageio.imwrite(os.path.join(val_img_dir, f'val_rgb0_{save_step:06d}.png'), rgb0_np)
+                    imageio.imwrite(os.path.join(val_img_dir, f'val_disp0_{save_step:06d}.png'), (disp0_np / np.max(disp0_np) * 255).astype(np.uint8))
+                    imageio.imwrite(os.path.join(val_img_dir, f'val_z_std_{save_step:06d}.png'), (z_std_np / np.max(z_std_np) * 255).astype(np.uint8))
                 wandb.log(log_dict, step=global_step)
             else:
                 # TensorBoard logging (HWC format)
