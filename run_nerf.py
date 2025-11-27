@@ -911,8 +911,15 @@ def train():
 
         optimizer.zero_grad()
         img_loss = img2mse(rgb, target_s)
+        h = int(np.sqrt(N_rand))
+        w = h
+        rgb_img = rgb[:h*w].reshape(1, h, w, 3).permute(0,3,1,2)
+        target_img = target_s[:h*w].reshape(1, h, w, 3).permute(0,3,1,2)
         trans = extras['raw'][...,-1]
-        loss = img_loss
+        percep_loss = 0.05 * lpips_fn(rgb_img, target_img)  # lightweight, VRAM safe
+        ssim_loss = 0.05 * (1 - ssim_fn(rgb_img, target_img))
+        loss =  loss + percep_loss + ssim_loss
+
         psnr = mse2psnr(img_loss)
         
         # Add frequency diversity regularization to prevent frequency collapse
