@@ -917,7 +917,7 @@ def train():
         target_img = target_s[:h*w].reshape(1, h, w, 3).permute(0,3,1,2)
         trans = extras['raw'][...,-1]
         percep_loss = 0.05 * lpips_fn(rgb_img, target_img)  # lightweight, VRAM safe
-        ssim_loss = 0.05 * (1 - ssim_fn(rgb_img, target_img))
+        ssim_loss = 0.02 * (1 - ssim_fn(rgb_img, target_img))
         loss =  img_loss + percep_loss + ssim_loss
 
         psnr = mse2psnr(img_loss)
