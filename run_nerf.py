@@ -918,7 +918,7 @@ def train():
         trans = extras['raw'][...,-1]
         percep_loss = 0.05 * lpips_fn(rgb_img, target_img)  # lightweight, VRAM safe
         ssim_loss = 0.05 * (1 - ssim_fn(rgb_img, target_img))
-        loss =  loss + percep_loss + ssim_loss
+        img_loss =  img_loss + percep_loss + ssim_loss
 
         psnr = mse2psnr(img_loss)
         
