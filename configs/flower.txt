@@ -1,5 +1,5 @@
 expname = flower_test_high_quality
-basedir = ./logs
+basedir = Nerf_IDL/logs
 datadir = Nerf_IDL/data/nerf_llff_data/flower
 dataset_type = llff
 

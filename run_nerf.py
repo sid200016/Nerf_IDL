@@ -1198,15 +1198,12 @@ def train():
                 if embeddirs_fn is not None and isinstance(embeddirs_fn, nn.Module):
                     ckpt_dict['embeddirs_fn_state_dict'] = embeddirs_fn.state_dict()
             torch.save(ckpt_dict, path)
-            print('Saved checkpoints at', path)
-            wandb.save(path, base_path=basedir)
-            wandb.log({'checkpoint/saved': 1, 'checkpoint/step': global_step}, step=global_step)
-            print(f'Uploaded checkpoint to wandb: step {global_step}')
+           
             # Save checkpoint to wandb
             if args.use_wandb:
-                # wandb.save(path, base_path=basedir)
-                # wandb.log({'checkpoint/saved': 1, 'checkpoint/step': global_step}, step=global_step)
-                # print(f'Uploaded checkpoint to wandb: step {global_step}')
+                wandb.save(path, base_path=basedir)
+                wandb.log({'checkpoint/saved': 1, 'checkpoint/step': global_step}, step=global_step)
+                print(f'Uploaded checkpoint to wandb: step {global_step}')
                 pass
 
         if i%args.i_video==0 and i > 0:
