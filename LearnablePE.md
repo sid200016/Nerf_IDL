@@ -131,6 +131,253 @@ The current `flower.txt` configuration achieves **+6 dB PSNR improvement** over 
 
 ---
 
+## How Learnable PE is Implemented vs Baseline NeRF
+
+**Summary**: The key difference between baseline NeRF and our implementation lies in how positional encoding frequencies are handled. Baseline NeRF uses **fixed frequencies** hardcoded as `[2^0, 2^1, ..., 2^9] = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512]` that never change during training—these are simple constants applied to input coordinates via sin/cos functions. Our learnable PE implementation makes these frequencies **trainable parameters** stored in log-space (as `log(f)`), allowing them to adapt during training to optimal values for each scene. Additionally, we introduce learnable phase shifts that align the encoding with scene geometry, and per-frequency amplitude gates that let the network control the importance of each frequency band. Critically, we use a **separate learning rate** (30% of the network LR) for PE parameters to ensure stable training, and the log-space storage ensures all frequencies update proportionally regardless of their magnitude—preventing high frequencies from dominating or collapsing. This scene-adaptive approach directly addresses spectral bias by allowing the network to learn optimal frequency representations rather than being constrained to predetermined values, enabling the +6 dB improvement.
+
+### Baseline NeRF: Fixed Positional Encoding
+
+**Implementation (Original):**
+
+```python
+class Embedder:
+    def create_embedding_fn(self):
+        # Fixed frequency bands: [2^0, 2^1, ..., 2^9]
+        freq_bands = 2.**torch.linspace(0., max_freq, steps=N_freqs)
+        
+        # Create fixed encoding functions
+        for freq in freq_bands:
+            embed_fns.append(lambda x, freq=freq: torch.sin(x * freq))
+            embed_fns.append(lambda x, freq=freq: torch.cos(x * freq))
+    
+    def embed(self, inputs):
+        # Simply apply fixed functions
+        return torch.cat([fn(inputs) for fn in self.embed_fns], -1)
+```
+
+**Key Characteristics:**
+- **Fixed Frequencies**: Hardcoded as `[1, 2, 4, 8, 16, 32, 64, 128, 256, 512]`
+- **No Parameters**: Frequencies are constants, not trainable
+- **Simple Function**: Just applies sin/cos with fixed frequencies
+- **One-Size-Fits-All**: Same frequencies for all scenes
+
+**Mathematical Formulation:**
+```
+γ(p) = [sin(2π·1·p), cos(2π·1·p), sin(2π·2·p), cos(2π·2·p), ..., sin(2π·512·p), cos(2π·512·p)]
+```
+
+---
+
+### Our Implementation: Learnable Positional Encoding
+
+**Implementation (Current):**
+
+```python
+class LearnableFourierEmbedder(nn.Module):
+    def __init__(self, num_freqs=10, learnable_freqs=True, 
+                 learnable_phase=True, use_gating=True):
+        # Initialize frequencies (same as baseline)
+        freq_bands = 2.**torch.linspace(0., num_freqs-1, steps=num_freqs)
+        
+        if learnable_freqs:
+            # KEY INNOVATION: Store in LOG SPACE
+            log_freq_bands = torch.log(freq_bands + 1e-8)
+            self.log_freq_bands = nn.Parameter(log_freq_bands)  # LEARNABLE!
+        
+        if learnable_phase:
+            # Learnable phase shifts for each frequency and dimension
+            self.phase_shifts = nn.Parameter(torch.zeros(num_freqs, input_dims, 2))
+        
+        if use_gating:
+            # Per-frequency amplitude gates
+            self.amp_gates = nn.Parameter(torch.log(amp_gates_init + 1e-8))
+    
+    def forward(self, inputs):
+        # Convert from log-space to linear-space
+        freq_bands = torch.exp(self.log_freq_bands)  # LEARNABLE frequencies
+        
+        for i, freq in enumerate(freq_bands):
+            scaled_inputs = inputs * freq
+            
+            # Apply learnable phase shifts
+            if self.learnable_phase:
+                sin_phase = self.phase_shifts[i, :, 0]
+                cos_phase = self.phase_shifts[i, :, 1]
+                outputs.append(gate * torch.sin(scaled_inputs + sin_phase))
+                outputs.append(gate * torch.cos(scaled_inputs + cos_phase))
+            else:
+                outputs.append(gate * torch.sin(scaled_inputs))
+                outputs.append(gate * torch.cos(scaled_inputs))
+        
+        return torch.cat(outputs, -1)
+```
+
+**Key Characteristics:**
+- **Learnable Frequencies**: Stored as `nn.Parameter` (trainable)
+- **Log-Space Storage**: Frequencies stored as `log(f)` for proportional updates
+- **Learnable Phases**: Separate phase shifts for sin and cos
+- **Amplitude Gates**: Per-frequency learnable scaling factors
+- **Scene-Adaptive**: Frequencies adapt to each scene during training
+
+**Mathematical Formulation:**
+```
+γ(p) = [g₁·sin(2π·f₁·p + φ₁), g₁·cos(2π·f₁·p + φ₁), 
+        g₂·sin(2π·f₂·p + φ₂), g₂·cos(2π·f₂·p + φ₂), 
+        ..., 
+        gₙ·sin(2π·fₙ·p + φₙ), gₙ·cos(2π·fₙ·p + φₙ)]
+```
+where:
+- `f_i` = learnable frequency (stored as `exp(log_f_i)`)
+- `φ_i` = learnable phase shift
+- `g_i` = learnable amplitude gate
+
+---
+
+### Critical Implementation Differences
+
+#### 1. **Log-Space Storage for Proportional Updates**
+
+**Baseline:**
+```python
+freq_bands = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512]  # Fixed, not trainable
+```
+
+**Our Implementation:**
+```python
+# Store in log-space: log([1, 2, 4, ..., 512]) = [0, 0.69, 1.39, ..., 6.24]
+log_freq_bands = nn.Parameter(torch.log(freq_bands))
+
+# During forward pass:
+freq_bands = torch.exp(log_freq_bands)  # Convert back to linear space
+```
+
+**Why Log-Space?**
+- **Proportional Updates**: All frequencies update proportionally regardless of magnitude
+- **Prevents Frequency Collapse**: High frequencies (512) don't dominate low frequencies (1)
+- **Stable Training**: Gradients scale appropriately for all frequency bands
+- **Example**: If gradient is 0.01, frequency 1 updates by 0.01, frequency 512 also updates by ~0.01 (proportionally)
+
+#### 2. **Separate Learning Rate for PE Parameters**
+
+**Baseline:**
+```python
+# Single learning rate for all parameters
+optimizer = torch.optim.Adam(model.parameters(), lr=5e-4)
+```
+
+**Our Implementation:**
+```python
+# Separate learning rates
+network_params = [p for n, p in model.named_parameters() 
+                  if 'freq_bands' not in n and 'phase' not in n]
+pe_params = [p for n, p in model.named_parameters() 
+            if 'freq_bands' in n or 'phase' in n]
+
+optimizer = torch.optim.Adam([
+    {'params': network_params, 'lr': 5e-4},      # Network LR
+    {'params': pe_params, 'lr': 1.5e-4}           # PE LR = 30% of network LR
+])
+```
+
+**Why Separate LR?**
+- **Stability**: PE parameters update slower, preventing training instability
+- **Balance**: Network learns features while PE adapts frequencies gradually
+- **Prevents Overfitting**: Slower PE updates prevent frequencies from overfitting to training data
+
+#### 3. **Learnable Phase Shifts**
+
+**Baseline:**
+```python
+# Fixed phase (always 0)
+outputs.append(torch.sin(inputs * freq))      # sin(2π·f·p + 0)
+outputs.append(torch.cos(inputs * freq))      # cos(2π·f·p + 0)
+```
+
+**Our Implementation:**
+```python
+# Learnable phase shifts
+sin_phase = self.phase_shifts[i, :, 0]  # Per-frequency, per-dimension
+cos_phase = self.phase_shifts[i, :, 1]
+outputs.append(gate * torch.sin(scaled_inputs + sin_phase))
+outputs.append(gate * torch.cos(scaled_inputs + cos_phase))
+```
+
+**Why Learnable Phases?**
+- **Better Alignment**: Phases adapt to scene geometry
+- **Flexibility**: Allows encoding to shift for optimal feature representation
+- **Scene-Specific**: Different scenes benefit from different phase alignments
+
+#### 4. **Per-Frequency Amplitude Gates**
+
+**Baseline:**
+```python
+# All frequencies have equal amplitude (implicitly 1.0)
+outputs.append(torch.sin(inputs * freq))
+```
+
+**Our Implementation:**
+```python
+# Learnable amplitude gates
+amp_gates = nn.Parameter(torch.log([1.0, 1.0, ..., 0.1, 0.1]))  # Log-space
+gate = torch.exp(amp_gates[i])  # Convert to linear space
+outputs.append(gate * torch.sin(scaled_inputs + phase))
+```
+
+**Why Amplitude Gates?**
+- **Progressive Encoding**: Initially emphasize low frequencies, gradually add high frequencies
+- **Soft Control**: Network learns which frequencies are important for the scene
+- **Training Stability**: Prevents high-frequency noise from dominating early training
+
+---
+
+### Training Loop Differences
+
+#### Baseline Training:
+```python
+# Single optimizer group
+optimizer = torch.optim.Adam(model.parameters(), lr=5e-4)
+
+# Standard training
+loss.backward()
+optimizer.step()
+```
+
+#### Our Training:
+```python
+# Separate optimizer groups
+optimizer = torch.optim.Adam([
+    {'params': network_params, 'lr': 5e-4},
+    {'params': pe_params, 'lr': 1.5e-4}  # 30% of network LR
+])
+
+# Training with frequency-proportional gradient scaling
+loss.backward()
+
+# Optional: Amplify PE gradients if needed
+if pe_grad_amplify > 1.0:
+    embed_fn.log_freq_bands.grad.data *= pe_grad_amplify
+
+optimizer.step()
+```
+
+---
+
+### Summary: Key Implementation Innovations
+
+| Aspect | Baseline NeRF | Our Implementation |
+|--------|---------------|-------------------|
+| **Frequencies** | Fixed `[2^0, ..., 2^9]` | **Learnable** `nn.Parameter` |
+| **Storage** | Direct values | **Log-space** `log(f)` |
+| **Phase** | Fixed (0) | **Learnable** per frequency/dimension |
+| **Amplitude** | Fixed (1.0) | **Learnable gates** per frequency |
+| **Learning Rate** | Single LR for all | **Separate PE LR** (30% of network) |
+| **Gradient Updates** | Standard | **Proportional** (via log-space) |
+| **Adaptation** | None | **Scene-adaptive** during training |
+
+**Result**: The network learns optimal frequency representations for each scene, directly addressing spectral bias and enabling the +6 dB improvement.
+
+---
+
 ## Detailed Explanation of Additional Config Parameters
 
 The current `flower.txt` config includes many parameters not present in the original. Here's what each one does:
